@@ -9,6 +9,7 @@
     "build": "pnpm run clean && pnpm run compile",
     "clean": "rimraf ./dist",
     "compile": "tsc -b tsconfig.build.json",
+    "prepare": "pnpm run build",
     "prepublishOnly": "pnpm run build",
     "release": "pnpm build && changeset publish --provenance",
     "release-next": "./scripts/release-next.sh",
