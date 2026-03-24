@@ -38,7 +38,8 @@ function makeManager(
     network,
     clientId,
   });
-  return { manager };
+  // `store` is the manager itself — KeyPackageStore was merged into KeyPackageManager
+  return { manager, store: manager };
 }
 
 /** Returns the published NostrEvent[] for a ref, or [] if none */
@@ -352,25 +353,46 @@ describe("KeyPackageManager", () => {
       expect(keyPackageEvents).toHaveLength(2);
     });
 
-    it("removes the old private key material after rotation", async () => {
+    it("deprecates the old entry after rotation (count drops, has() still true)", async () => {
       const { manager } = makeManager(network, account, TEST_CLIENT_ID);
       const pkg = await manager.create({ relays: ["wss://relay.test"] });
 
       expect(await manager.count()).toBe(1);
       await manager.rotate(pkg.keyPackageRef);
 
+      // count() only includes active (non-deprecated) entries, so new total is 1
       expect(await manager.count()).toBe(1);
-      expect(await manager.has(pkg.keyPackageRef)).toBe(false);
+      // has() returns true for deprecated entries — private key still accessible
+      // for Welcome decryption during the grace window
+      expect(await manager.has(pkg.keyPackageRef)).toBe(true);
     });
 
-    it("removes the old published events after rotation", async () => {
+    it("deprecated old entry is excluded from list() after rotation", async () => {
       const { manager } = makeManager(network, account, TEST_CLIENT_ID);
       const pkg = await manager.create({ relays: ["wss://relay.test"] });
 
       await manager.rotate(pkg.keyPackageRef);
 
+      const listed = await manager.list();
+      // Only the new (active) entry should appear
+      expect(listed).toHaveLength(1);
+      const listedRefs = listed.map((p) =>
+        Buffer.from(p.keyPackageRef).toString("hex"),
+      );
+      expect(listedRefs).not.toContain(
+        Buffer.from(pkg.keyPackageRef).toString("hex"),
+      );
+    });
+
+    it("old published events remain accessible on deprecated entry after rotation", async () => {
+      const { manager } = makeManager(network, account, TEST_CLIENT_ID);
+      const pkg = await manager.create({ relays: ["wss://relay.test"] });
+
+      await manager.rotate(pkg.keyPackageRef);
+
+      // The deprecated entry still holds the published events
       const remaining = await getPublished(manager, pkg.keyPackageRef);
-      expect(remaining).toHaveLength(0);
+      expect(remaining).toHaveLength(1);
     });
 
     it("reuses relays from the old key package if no relays option is passed", async () => {
@@ -1078,6 +1100,252 @@ describe("KeyPackageManager", () => {
       await gen.return(undefined);
 
       expect(value).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // fetchKeyPackagesForUser()
+  // -------------------------------------------------------------------------
+
+  describe("fetchKeyPackagesForUser()", () => {
+    it("queries network with both kind 443 and kind 30443 filters", async () => {
+      const { manager } = makeManager(network, account, TEST_CLIENT_ID);
+      const requestSpy = vi.spyOn(network, "request");
+      const targetPubkey = await account.signer.getPublicKey();
+
+      await manager.fetchKeyPackagesForUser(targetPubkey, [
+        "wss://relay.test",
+      ]);
+
+      expect(requestSpy).toHaveBeenCalledOnce();
+      const [relays, filters] = requestSpy.mock.calls[0];
+      expect(relays).toEqual(["wss://relay.test"]);
+      const filterArray = Array.isArray(filters) ? filters : [filters];
+      expect(filterArray).toHaveLength(2);
+      expect(filterArray.some((f) => f.kinds?.includes(KEY_PACKAGE_KIND))).toBe(
+        true,
+      );
+      expect(
+        filterArray.some((f) =>
+          f.kinds?.includes(ADDRESSABLE_KEY_PACKAGE_KIND),
+        ),
+      ).toBe(true);
+    });
+
+    it("returns all events found on the relays", async () => {
+      const { manager } = makeManager(network, account, TEST_CLIENT_ID);
+      const pkg = await manager.create({ relays: ["wss://relay.test"] });
+      const targetPubkey = await account.signer.getPublicKey();
+
+      const events = await manager.fetchKeyPackagesForUser(targetPubkey, [
+        "wss://relay.test",
+      ]);
+
+      expect(events.length).toBeGreaterThan(0);
+      expect(events.every((e) => e.pubkey === targetPubkey)).toBe(true);
+    });
+
+    it("tracks all returned events into the publish record", async () => {
+      const { manager } = makeManager(network, account, TEST_CLIENT_ID);
+      const pkg = await manager.create({ relays: ["wss://relay.test"] });
+      const targetPubkey = await account.signer.getPublicKey();
+
+      // trackSpy counts calls to track()
+      const trackSpy = vi.spyOn(manager, "track");
+
+      const events = await manager.fetchKeyPackagesForUser(targetPubkey, [
+        "wss://relay.test",
+      ]);
+
+      expect(trackSpy).toHaveBeenCalledTimes(events.length);
+    });
+
+    it("returns an empty array when no matching events exist on the relays", async () => {
+      const { manager } = makeManager(network, account, TEST_CLIENT_ID);
+      const strangerPubkey =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+      const events = await manager.fetchKeyPackagesForUser(strangerPubkey, [
+        "wss://relay.test",
+      ]);
+
+      expect(events).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // KeyPackageStore > grace window (markDeprecated / removeExpired)
+  // -------------------------------------------------------------------------
+
+  describe("KeyPackageStore > grace window", () => {
+    it("markDeprecated() sets the deprecatedAt timestamp on the entry", async () => {
+      const { store } = makeManager(network, account, TEST_CLIENT_ID);
+      const ciphersuite = await getCiphersuiteImpl(
+        "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+        defaultCryptoProvider,
+      );
+      const pubkey = await account.signer.getPublicKey();
+      const kp = await generateKeyPackage({
+        credential: createCredential(pubkey),
+        ciphersuiteImpl: ciphersuite,
+      });
+      await store.add(kp);
+
+      const listed = await store.list();
+      const ref = listed[0].keyPackageRef;
+      const timestamp = 1_000_000;
+
+      await store.markDeprecated(ref, timestamp);
+
+      const stored = await store.getKeyPackage(ref);
+      expect(stored?.deprecatedAt).toBe(timestamp);
+    });
+
+    it("removeExpired() removes entries older than maxAgeSec", async () => {
+      const { store } = makeManager(network, account, TEST_CLIENT_ID);
+      const ciphersuite = await getCiphersuiteImpl(
+        "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+        defaultCryptoProvider,
+      );
+      const pubkey = await account.signer.getPublicKey();
+      const kp = await generateKeyPackage({
+        credential: createCredential(pubkey),
+        ciphersuiteImpl: ciphersuite,
+      });
+      await store.add(kp);
+
+      const listed = await store.list();
+      const ref = listed[0].keyPackageRef;
+
+      // Timestamp far in the past — grace window has expired
+      const expiredTimestamp = Math.floor(Date.now() / 1000) - 90000;
+      await store.markDeprecated(ref, expiredTimestamp);
+
+      const removed = await store.removeExpired(86400);
+
+      expect(removed).toBe(1);
+      expect(await store.getKeyPackage(ref)).toBeNull();
+    });
+
+    it("removeExpired() does NOT remove entries within the grace window", async () => {
+      const { store } = makeManager(network, account, TEST_CLIENT_ID);
+      const ciphersuite = await getCiphersuiteImpl(
+        "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+        defaultCryptoProvider,
+      );
+      const pubkey = await account.signer.getPublicKey();
+      const kp = await generateKeyPackage({
+        credential: createCredential(pubkey),
+        ciphersuiteImpl: ciphersuite,
+      });
+      await store.add(kp);
+
+      const listed = await store.list();
+      const ref = listed[0].keyPackageRef;
+
+      // Timestamp just now — still within the grace window
+      const recentTimestamp = Math.floor(Date.now() / 1000);
+      await store.markDeprecated(ref, recentTimestamp);
+
+      const removed = await store.removeExpired(86400);
+
+      expect(removed).toBe(0);
+      expect(await store.getKeyPackage(ref)).not.toBeNull();
+    });
+
+    it("list() excludes deprecated entries", async () => {
+      const { store } = makeManager(network, account, TEST_CLIENT_ID);
+      const ciphersuite = await getCiphersuiteImpl(
+        "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+        defaultCryptoProvider,
+      );
+      const pubkey = await account.signer.getPublicKey();
+
+      const kp1 = await generateKeyPackage({
+        credential: createCredential(pubkey),
+        ciphersuiteImpl: ciphersuite,
+      });
+      const kp2 = await generateKeyPackage({
+        credential: createCredential(pubkey),
+        ciphersuiteImpl: ciphersuite,
+      });
+      await store.add(kp1);
+      await store.add(kp2);
+
+      const listed = await store.list();
+      expect(listed).toHaveLength(2);
+
+      // Deprecate the first one
+      await store.markDeprecated(
+        listed[0].keyPackageRef,
+        Math.floor(Date.now() / 1000),
+      );
+
+      const afterDeprecation = await store.list();
+      expect(afterDeprecation).toHaveLength(1);
+      const remainingRef = Buffer.from(
+        afterDeprecation[0].keyPackageRef,
+      ).toString("hex");
+      expect(remainingRef).toBe(
+        Buffer.from(listed[1].keyPackageRef).toString("hex"),
+      );
+    });
+
+    it("getPrivateKey() still returns private keys for deprecated entries", async () => {
+      const { store } = makeManager(network, account, TEST_CLIENT_ID);
+      const ciphersuite = await getCiphersuiteImpl(
+        "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+        defaultCryptoProvider,
+      );
+      const pubkey = await account.signer.getPublicKey();
+      const kp = await generateKeyPackage({
+        credential: createCredential(pubkey),
+        ciphersuiteImpl: ciphersuite,
+      });
+      await store.add(kp);
+
+      const listed = await store.list();
+      const ref = listed[0].keyPackageRef;
+
+      await store.markDeprecated(ref, Math.floor(Date.now() / 1000));
+
+      const privateKey = await store.getPrivateKey(ref);
+      expect(privateKey).not.toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // KeyPackageManager > cleanupDeprecated()
+  // -------------------------------------------------------------------------
+
+  describe("cleanupDeprecated()", () => {
+    it("rotate() marks old entry as deprecated instead of removing it", async () => {
+      const { manager, store } = makeManager(network, account, TEST_CLIENT_ID);
+      const pkg = await manager.create({ relays: ["wss://relay.test"] });
+
+      await manager.rotate(pkg.keyPackageRef);
+
+      // The old entry still exists in the store with deprecatedAt set
+      const stored = await store.getKeyPackage(pkg.keyPackageRef);
+      expect(stored).not.toBeNull();
+      expect(stored?.deprecatedAt).toBeDefined();
+      expect(typeof stored?.deprecatedAt).toBe("number");
+    });
+
+    it("cleanupDeprecated() returns count of removed entries", async () => {
+      const { manager } = makeManager(network, account, TEST_CLIENT_ID);
+      const pkg = await manager.create({ relays: ["wss://relay.test"] });
+
+      // Rotate creates a deprecated entry with the current timestamp
+      await manager.rotate(pkg.keyPackageRef);
+
+      // No entries are expired yet (grace window is 24 hours)
+      const countWithinWindow = await manager.cleanupDeprecated(86400);
+      expect(countWithinWindow).toBe(0);
+
+      // Passing maxAgeSec=0 expires entries deprecated at or before "now"
+      const countExpired = await manager.cleanupDeprecated(0);
+      expect(countExpired).toBe(1);
     });
   });
 });

@@ -19,6 +19,7 @@ import {
   getKeyPackageIdentifier,
   getKeyPackageReference,
   getKeyPackageRelays,
+  keyPackageFilters,
 } from "../core/key-package-event.js";
 import {
   calculateKeyPackageRef,
@@ -640,10 +641,30 @@ export class KeyPackageManager extends EventEmitter<KeyPackageManagerEvents> {
       protected: options?.protected,
     });
 
-    // Remove old private key material (and its published events)
-    await this.storeRemove(ref);
+    // Deprecate old private key material instead of removing it immediately.
+    // Stale copies of the old KeyPackage may persist on lagging relays; keeping
+    // the old init_key alive for a grace window ensures Welcome messages built
+    // from those stale copies remain decryptable.
+    await this.markDeprecated(ref, Math.floor(Date.now() / 1000));
 
     return newPkg;
+  }
+
+  /**
+   * Removes all deprecated key package entries whose grace window has elapsed.
+   *
+   * Call this periodically (e.g. on app startup or after rotation) to reclaim
+   * storage. The default grace window of 24 hours gives lagging relays time to
+   * propagate the new last_resort KeyPackage before the old init_key is discarded.
+   *
+   * @param maxAgeSec - Grace window in seconds (default: 86400 = 24 hours).
+   *   Entries deprecated more than this many seconds ago are removed.
+   * @returns The number of entries removed
+   */
+  async cleanupDeprecated(maxAgeSec: number = 86400): Promise<number> {
+    const count = await this.removeExpired(maxAgeSec);
+    this.#log("cleanupDeprecated removed %d expired entries", count);
+    return count;
   }
 
   // ---------------------------------------------------------------------------
@@ -772,6 +793,42 @@ export class KeyPackageManager extends EventEmitter<KeyPackageManagerEvents> {
   /** Retrieves the full key package from the store. */
   async get(ref: Uint8Array | string): Promise<StoredKeyPackage | null> {
     return this.storeGetKeyPackage(ref);
+  }
+
+  /**
+   * Alias for {@link get} — retrieves the full key package from the store.
+   * @deprecated Prefer {@link get}
+   */
+  async getKeyPackage(
+    ref: Uint8Array | string,
+  ): Promise<StoredKeyPackage | null> {
+    return this.storeGetKeyPackage(ref);
+  }
+
+  /**
+   * Fetches all KeyPackage events for a user from relays, querying both
+   * legacy (kind 443) and current (kind 30443) events for migration
+   * compatibility.
+   *
+   * Each returned event is also tracked via {@link track} so it enters
+   * the local publish record.
+   *
+   * @param pubkey - The Nostr public key of the user
+   * @param relays - Relay URLs to query
+   * @returns All valid KeyPackage events found
+   */
+  async fetchKeyPackagesForUser(
+    pubkey: string,
+    relays: string[],
+  ): Promise<NostrEvent[]> {
+    const filters = keyPackageFilters([pubkey]);
+    const events = await this.network.request(relays, filters);
+
+    for (const event of events) {
+      await this.track(event);
+    }
+
+    return events;
   }
 
   /**
