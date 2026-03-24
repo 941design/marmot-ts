@@ -17,8 +17,14 @@ import {
   createKeyPackageEvent,
   getKeyPackage,
   getKeyPackageIdentifier,
+  keyPackageFilters,
+  selectBestKeyPackage,
 } from "../key-package-event.js";
-import { ADDRESSABLE_KEY_PACKAGE_KIND, KEY_PACKAGE_KIND } from "../protocol.js";
+import {
+  ADDRESSABLE_KEY_PACKAGE_KIND,
+  KEY_PACKAGE_KIND,
+  LAST_RESORT_EXTENSION_TYPE,
+} from "../protocol.js";
 
 const mockPubkey =
   "02a1633cafe37eeebe2b39b4ec5f3d74c35e61fa7e7e6b7b8c5f7c4f3b2a1b2c3d";
@@ -608,5 +614,181 @@ describe("spec compliance (MIP-00)", () => {
     expect(() => getKeyPackage(hexEncodingEvent)).toThrow(
       /encoding=base64 tag/i,
     );
+  });
+});
+
+describe("selectBestKeyPackage", () => {
+  const validPubkey =
+    "884704bd421671e01c13f854d2ce23ce2a5bfe9562f4f297ad2bc921ba30c3a6";
+
+  async function makeValidEvent(
+    overrides: Partial<NostrEvent> & { lastResort?: boolean } = {},
+  ): Promise<NostrEvent> {
+    const { lastResort = false, ...eventOverrides } = overrides;
+    const credential = createCredential(validPubkey);
+    const ciphersuiteImpl = await getCiphersuiteImpl(
+      "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+      defaultCryptoProvider,
+    );
+    const keyPackage = await generateKeyPackage({
+      credential,
+      ciphersuiteImpl,
+      isLastResort: lastResort,
+    });
+    const template = await createKeyPackageEvent({
+      keyPackage: keyPackage.publicPackage,
+      d: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    });
+    return {
+      ...template,
+      pubkey: validPubkey,
+      id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      sig: "sig",
+      ...eventOverrides,
+    };
+  }
+
+  it("returns null for an empty array", async () => {
+    expect(selectBestKeyPackage([])).toBeNull();
+  });
+
+  it("returns null when all candidates have wrong kind", async () => {
+    const wrongKind: NostrEvent = {
+      kind: 1,
+      id: "aaa",
+      pubkey: validPubkey,
+      created_at: 1000,
+      tags: [],
+      content: "",
+      sig: "sig",
+    };
+    expect(selectBestKeyPackage([wrongKind])).toBeNull();
+  });
+
+  it("returns null when all candidates fail decoding", async () => {
+    const badContent: NostrEvent = {
+      kind: ADDRESSABLE_KEY_PACKAGE_KIND,
+      id: "aaa",
+      pubkey: validPubkey,
+      created_at: 1000,
+      tags: [["encoding", "base64"]],
+      content: "bm90YXZhbGlka2V5cGFja2FnZQ==",
+      sig: "sig",
+    };
+    expect(selectBestKeyPackage([badContent])).toBeNull();
+  });
+
+  it("selects a non-last_resort candidate over a last_resort candidate", async () => {
+    const normal = await makeValidEvent({
+      id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      created_at: 1000,
+    });
+    const lastResort = await makeValidEvent({
+      lastResort: true,
+      id: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      created_at: 2000,
+    });
+
+    const result = selectBestKeyPackage([lastResort, normal]);
+    expect(result?.id).toBe(normal.id);
+  });
+
+  it("selects the newest created_at among same-priority candidates", async () => {
+    const older = await makeValidEvent({
+      id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      created_at: 1000,
+    });
+    const newer = await makeValidEvent({
+      id: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      created_at: 2000,
+    });
+
+    const result = selectBestKeyPackage([older, newer]);
+    expect(result?.id).toBe(newer.id);
+  });
+
+  it("tie-breaks by lexicographically smallest id when created_at is equal", async () => {
+    const eventA = await makeValidEvent({
+      id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      created_at: 1000,
+    });
+    const eventB = await makeValidEvent({
+      id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      created_at: 1000,
+    });
+
+    const result = selectBestKeyPackage([eventB, eventA]);
+    expect(result?.id).toBe(eventA.id);
+  });
+
+  it("handles mixed kind 443 and kind 30443 candidates", async () => {
+    const kind443 = await makeValidEvent({
+      kind: KEY_PACKAGE_KIND,
+      id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      created_at: 1000,
+    });
+    const kind30443 = await makeValidEvent({
+      id: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      created_at: 2000,
+    });
+
+    const result = selectBestKeyPackage([kind443, kind30443]);
+    expect(result?.id).toBe(kind30443.id);
+  });
+
+  it("skips candidates that fail getKeyPackage() decoding and selects from the rest", async () => {
+    const invalid: NostrEvent = {
+      kind: ADDRESSABLE_KEY_PACKAGE_KIND,
+      id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      pubkey: validPubkey,
+      created_at: 9999,
+      tags: [["encoding", "base64"]],
+      content: "bm90YXZhbGlka2V5cGFja2FnZQ==",
+      sig: "sig",
+    };
+    const valid = await makeValidEvent({
+      id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      created_at: 1000,
+    });
+
+    const result = selectBestKeyPackage([invalid, valid]);
+    expect(result?.id).toBe(valid.id);
+  });
+});
+
+describe("keyPackageFilters", () => {
+  const author1 =
+    "884704bd421671e01c13f854d2ce23ce2a5bfe9562f4f297ad2bc921ba30c3a6";
+  const author2 =
+    "02a1633cafe37eeebe2b39b4ec5f3d74c35e61fa7e7e6b7b8c5f7c4f3b2a1b2c3d";
+
+  it("returns exactly two filters", () => {
+    const filters = keyPackageFilters([author1]);
+    expect(filters).toHaveLength(2);
+  });
+
+  it("first filter targets kind 443", () => {
+    const [legacyFilter] = keyPackageFilters([author1]);
+    expect(legacyFilter.kinds).toEqual([KEY_PACKAGE_KIND]);
+  });
+
+  it("second filter targets kind 30443", () => {
+    const [, addressableFilter] = keyPackageFilters([author1]);
+    expect(addressableFilter.kinds).toEqual([ADDRESSABLE_KEY_PACKAGE_KIND]);
+  });
+
+  it("both filters include the provided author", () => {
+    const filters = keyPackageFilters([author1]);
+    for (const filter of filters) {
+      expect(filter.authors).toContain(author1);
+    }
+  });
+
+  it("works with multiple authors — both filters carry all authors", () => {
+    const filters = keyPackageFilters([author1, author2]);
+    for (const filter of filters) {
+      expect(filter.authors).toContain(author1);
+      expect(filter.authors).toContain(author2);
+    }
   });
 });

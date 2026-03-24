@@ -1,6 +1,7 @@
 /** @module @category Core - Key Package Event */
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { EventTemplate, NostrEvent } from "applesauce-core/helpers/event";
+import { Filter } from "applesauce-core/helpers/filter";
 import {
   CiphersuiteId,
   ciphersuites,
@@ -32,6 +33,7 @@ import {
   KEY_PACKAGE_MLS_VERSION_TAG,
   KEY_PACKAGE_RELAYS_TAG,
   KeyPackageClient,
+  LAST_RESORT_EXTENSION_TYPE,
   MLS_VERSIONS,
 } from "./protocol.js";
 
@@ -344,4 +346,74 @@ export function getKeyPackageNostrPubkey(event: NostrEvent): string {
  */
 export function getKeyPackageReference(event: NostrEvent): string | undefined {
   return getTagValue(event, "i");
+}
+
+/**
+ * Selects the best KeyPackage event from a set of candidates for a given user.
+ *
+ * Selection criteria (in order):
+ * 1. Reject events that are not kind 443 or 30443
+ * 2. Reject events that fail KeyPackage decoding
+ * 3. Prefer non-last_resort over last_resort candidates
+ * 4. Among equal-priority candidates, prefer the newest created_at
+ * 5. Tie-break by lexicographically smallest event id
+ *
+ * @param candidates - Array of NostrEvent objects to select from
+ * @returns The best candidate NostrEvent, or null if no valid candidates exist
+ */
+export function selectBestKeyPackage(
+  candidates: NostrEvent[],
+): NostrEvent | null {
+  type ValidCandidate = { event: NostrEvent; isLastResort: boolean };
+
+  const valid: ValidCandidate[] = [];
+
+  for (const event of candidates) {
+    if (
+      event.kind !== KEY_PACKAGE_KIND &&
+      event.kind !== ADDRESSABLE_KEY_PACKAGE_KIND
+    ) {
+      continue;
+    }
+
+    let keyPackage;
+    try {
+      keyPackage = getKeyPackage(event);
+    } catch {
+      continue;
+    }
+
+    const isLastResort = keyPackage.extensions.some(
+      (ext) => ext.extensionType === LAST_RESORT_EXTENSION_TYPE,
+    );
+
+    valid.push({ event, isLastResort });
+  }
+
+  if (valid.length === 0) return null;
+
+  const hasNonLastResort = valid.some((c) => !c.isLastResort);
+  const pool = hasNonLastResort
+    ? valid.filter((c) => !c.isLastResort)
+    : valid;
+
+  return pool.reduce((best, candidate) => {
+    if (candidate.event.created_at > best.event.created_at) return candidate;
+    if (candidate.event.created_at < best.event.created_at) return best;
+    return candidate.event.id < best.event.id ? candidate : best;
+  }).event;
+}
+
+/**
+ * Returns Nostr filters that match both legacy (kind 443) and current
+ * (kind 30443) KeyPackage events for the given authors.
+ *
+ * Use during the migration period to discover KeyPackages regardless of
+ * whether the publishing client has upgraded.
+ */
+export function keyPackageFilters(authors: string[]): Filter[] {
+  return [
+    { kinds: [KEY_PACKAGE_KIND], authors },
+    { kinds: [ADDRESSABLE_KEY_PACKAGE_KIND], authors },
+  ];
 }
