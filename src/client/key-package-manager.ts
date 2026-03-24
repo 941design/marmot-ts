@@ -56,6 +56,15 @@ export type LocalKeyPackage = {
   published?: NostrEvent[];
   /** Whether this key package has been consumed (e.g. used to join a group). Undefined means unused. */
   used?: boolean;
+  /**
+   * Unix timestamp (seconds) when this entry was marked as deprecated.
+   *
+   * Set by {@link KeyPackageManager.markDeprecated} during rotation instead of
+   * immediate deletion. Deprecated entries are excluded from {@link list} but
+   * their private material remains available for Welcome decryption until
+   * {@link KeyPackageManager.removeExpired} is called.
+   */
+  deprecatedAt?: number;
 };
 
 /**
@@ -81,6 +90,14 @@ export type TrackedKeyPackage = {
   published?: NostrEvent[];
   /** Whether this key package has been consumed (e.g. used to join a group). Undefined means unused. */
   used?: boolean;
+  /**
+   * Unix timestamp (seconds) when this entry was marked as deprecated.
+   *
+   * Set by {@link KeyPackageManager.markDeprecated} during rotation instead of
+   * immediate deletion. Deprecated entries are excluded from {@link list} but
+   * remain in the store until {@link KeyPackageManager.removeExpired} is called.
+   */
+  deprecatedAt?: number;
 };
 
 /**
@@ -443,8 +460,15 @@ export class KeyPackageManager extends EventEmitter<KeyPackageManagerEvents> {
   }
 
   /**
-   * Lists all {@link LocalKeyPackage} entries (those with private material),
+   * Lists all active {@link LocalKeyPackage} entries (those with private material),
    * without the private package itself.
+   *
+   * Deprecated entries (those with `deprecatedAt` set) are excluded from the
+   * listing. Use {@link get} to retrieve a specific entry by ref regardless of
+   * deprecated status.
+   *
+   * {@link TrackedKeyPackage} entries are also excluded — use {@link get} to
+   * retrieve a specific tracked entry by ref.
    */
   private async storeList(): Promise<ListedKeyPackage[]> {
     const allKeys = await this.store.keys();
@@ -456,7 +480,9 @@ export class KeyPackageManager extends EventEmitter<KeyPackageManagerEvents> {
     return packages
       .filter(
         (pkg): pkg is LocalKeyPackage =>
-          pkg !== null && pkg.privatePackage !== undefined,
+          pkg !== null &&
+          pkg.privatePackage !== undefined &&
+          pkg.deprecatedAt === undefined,
       )
       .map(({ keyPackageRef, publicPackage, identifier, published, used }) => ({
         keyPackageRef,
@@ -780,6 +806,65 @@ export class KeyPackageManager extends EventEmitter<KeyPackageManagerEvents> {
     await this.store.setItem(key, updated);
     this.emit("updated", updated);
     this.#log("marked key package %s as used", refHex);
+  }
+
+  /**
+   * Marks a stored key package as deprecated with a timestamp instead of
+   * removing it immediately.
+   *
+   * Deprecated entries are excluded from {@link list} (and therefore
+   * {@link count} and {@link watchKeyPackages} snapshots), but their private
+   * key material remains accessible via {@link getPrivateKey} for a grace
+   * window. This prevents Welcome messages built from stale relay copies of a
+   * rotated last_resort KeyPackage from becoming undecryptable.
+   *
+   * Call {@link removeExpired} to clean up entries whose grace window has elapsed.
+   *
+   * Does nothing if no entry exists for the given ref.
+   *
+   * @param ref - The key package reference (as Uint8Array or hex string)
+   * @param timestamp - Unix timestamp (seconds) to record as the deprecation time
+   */
+  async markDeprecated(
+    ref: Uint8Array | string,
+    timestamp: number,
+  ): Promise<void> {
+    const key = this.resolveStorageKey(ref);
+    const existing = await this.store.getItem(key);
+    if (!existing) return;
+
+    const updated: StoredKeyPackage = { ...existing, deprecatedAt: timestamp };
+    await this.store.setItem(key, updated);
+    this.emit("updated", updated);
+    this.#log("marked key package %s as deprecated at %d", key, timestamp);
+  }
+
+  /**
+   * Removes all entries whose `deprecatedAt` timestamp is older than
+   * `maxAgeSec` seconds ago (relative to the current wall clock).
+   *
+   * Only entries that have been explicitly deprecated via {@link markDeprecated}
+   * are candidates for removal — active entries are never touched.
+   *
+   * @param maxAgeSec - Grace window in seconds (default: 86400 = 24 hours)
+   * @returns The number of entries removed
+   */
+  async removeExpired(maxAgeSec: number = 86400): Promise<number> {
+    const allKeys = await this.store.keys();
+    const cutoff = Math.floor(Date.now() / 1000) - maxAgeSec;
+    let removed = 0;
+
+    for (const key of allKeys) {
+      const stored = await this.store.getItem(key);
+      if (stored?.deprecatedAt !== undefined && stored.deprecatedAt <= cutoff) {
+        await this.store.removeItem(key);
+        this.emit("removed", stored.keyPackageRef);
+        this.#log("removed expired deprecated key package %s", key);
+        removed++;
+      }
+    }
+
+    return removed;
   }
 
   /** Clears all entries (local and tracked) from the store. */
