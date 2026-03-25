@@ -34,6 +34,18 @@ export const KEY_PACKAGE_CLIENT_TAG = "client";
 /** The possible MLS protocol versions */
 export type MLS_VERSIONS = "1.0";
 
+/** The only protocol version currently supported per MIP-00 */
+export const REQUIRED_MLS_VERSION: MLS_VERSIONS = "1.0";
+
+/**
+ * The required ciphersuite ID per MIP-00.
+ * MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 = 0x0001
+ */
+export const REQUIRED_CIPHERSUITE_ID = 1;
+
+/** Hex representation of the required ciphersuite for tag values */
+export const REQUIRED_CIPHERSUITE_HEX = "0x0001";
+
 /** Parsed client tag from a kind 443 event */
 export type KeyPackageClient = {
   name: string;

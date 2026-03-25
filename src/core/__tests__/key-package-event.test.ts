@@ -19,6 +19,8 @@ import {
   getKeyPackageIdentifier,
   keyPackageFilters,
   selectBestKeyPackage,
+  softValidateKeyPackageEvent,
+  validateKeyPackageEvent,
 } from "../key-package-event.js";
 import {
   ADDRESSABLE_KEY_PACKAGE_KIND,
@@ -790,5 +792,359 @@ describe("keyPackageFilters", () => {
       expect(filter.authors).toContain(author1);
       expect(filter.authors).toContain(author2);
     }
+  });
+});
+
+describe("validateKeyPackageEvent", () => {
+  const validPubkey =
+    "884704bd421671e01c13f854d2ce23ce2a5bfe9562f4f297ad2bc921ba30c3a6";
+  const testD =
+    "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+  async function makeValidSignedEvent(): Promise<NostrEvent> {
+    const credential = createCredential(validPubkey);
+    const ciphersuiteImpl = await getCiphersuiteImpl(
+      "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+      defaultCryptoProvider,
+    );
+    const keyPackage = await generateKeyPackage({
+      credential,
+      ciphersuiteImpl,
+    });
+    const template = await createKeyPackageEvent({
+      keyPackage: keyPackage.publicPackage,
+      d: testD,
+      relays: ["wss://relay.example.com"],
+    });
+    return {
+      ...template,
+      pubkey: validPubkey,
+      id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      sig: "sig",
+    };
+  }
+
+  it("should accept a valid kind 30443 event", async () => {
+    const event = await makeValidSignedEvent();
+    const kp = await validateKeyPackageEvent(event);
+    expect(kp).toBeDefined();
+  });
+
+  it("should reject wrong event kind", async () => {
+    const event = await makeValidSignedEvent();
+    event.kind = 1;
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Expected key package event/,
+    );
+  });
+
+  it("should reject kind 30443 with missing d tag", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.filter((t) => t[0] !== "d");
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Missing required d tag/,
+    );
+  });
+
+  it("should reject kind 30443 with empty d tag", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) => (t[0] === "d" ? ["d", ""] : t));
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /d tag value must not be empty/,
+    );
+  });
+
+  it("should reject missing mls_protocol_version tag", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.filter((t) => t[0] !== "mls_protocol_version");
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Missing required tag: mls_protocol_version/,
+    );
+  });
+
+  it("should reject unsupported protocol version", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "mls_protocol_version" ? ["mls_protocol_version", "2.0"] : t,
+    );
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Unsupported protocol version: 2.0/,
+    );
+  });
+
+  it("should reject missing mls_ciphersuite tag", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.filter((t) => t[0] !== "mls_ciphersuite");
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Missing required tag: mls_ciphersuite/,
+    );
+  });
+
+  it("should reject invalid ciphersuite format", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "mls_ciphersuite" ? ["mls_ciphersuite", "0001"] : t,
+    );
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Ciphersuite value must be 0x followed by 4 hex digits/,
+    );
+  });
+
+  it("should reject unsupported ciphersuite value", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "mls_ciphersuite" ? ["mls_ciphersuite", "0x0002"] : t,
+    );
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Unsupported ciphersuite: 0x0002/,
+    );
+  });
+
+  it("should reject missing mls_extensions tag", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.filter((t) => t[0] !== "mls_extensions");
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Missing required tag: mls_extensions/,
+    );
+  });
+
+  it("should reject extensions with invalid hex format", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "mls_extensions" ? ["mls_extensions", "invalid"] : t,
+    );
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Extension value must be 0x followed by 4 hex digits/,
+    );
+  });
+
+  it("should reject missing required extension (MarmotGroupData 0xf2ee)", async () => {
+    const event = await makeValidSignedEvent();
+    // Keep only LastResort, remove MarmotGroupData
+    event.tags = event.tags.map((t) =>
+      t[0] === "mls_extensions" ? ["mls_extensions", "0x000a"] : t,
+    );
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Missing required extension: 0xf2ee \(MarmotGroupData\)/,
+    );
+  });
+
+  it("should reject missing relays tag", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.filter((t) => t[0] !== "relays");
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Missing required tag: relays/,
+    );
+  });
+
+  it("should reject relays tag with no URLs", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "relays" ? ["relays"] : t,
+    );
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Relays tag must have at least one relay URL/,
+    );
+  });
+
+  it("should reject invalid relay URL", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "relays" ? ["relays", "not-a-url"] : t,
+    );
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Invalid relay URL/,
+    );
+  });
+
+  it("should reject missing i tag", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.filter((t) => t[0] !== "i");
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Missing required tag: i/,
+    );
+  });
+
+  it("should reject non-hex i tag value", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "i" ? ["i", "not-hex!"] : t,
+    );
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /i tag must contain valid hex-encoded data/,
+    );
+  });
+
+  it("should reject credential identity mismatch with event pubkey", async () => {
+    const event = await makeValidSignedEvent();
+    // Change pubkey to a different one
+    event.pubkey =
+      "0000000000000000000000000000000000000000000000000000000000000001";
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /does not match event pubkey/,
+    );
+  });
+
+  it("should reject fabricated i tag that doesn't match content", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "i" ? ["i", "deadbeef".repeat(4)] : t,
+    );
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /KeyPackageRef in i tag does not match computed value/,
+    );
+  });
+
+  it("should accept legacy kind 443 event (no d tag required)", async () => {
+    const credential = createCredential(validPubkey);
+    const ciphersuiteImpl = await getCiphersuiteImpl(
+      "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+      defaultCryptoProvider,
+    );
+    const keyPackage = await generateKeyPackage({
+      credential,
+      ciphersuiteImpl,
+    });
+    // Build a kind 443 event with all required tags
+    const template = await createKeyPackageEvent({
+      keyPackage: keyPackage.publicPackage,
+      d: testD,
+      relays: ["wss://relay.example.com"],
+    });
+    const event: NostrEvent = {
+      ...template,
+      kind: KEY_PACKAGE_KIND,
+      pubkey: validPubkey,
+      id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      sig: "sig",
+    };
+    const kp = await validateKeyPackageEvent(event);
+    expect(kp).toBeDefined();
+  });
+});
+
+describe("softValidateKeyPackageEvent", () => {
+  const validPubkey =
+    "884704bd421671e01c13f854d2ce23ce2a5bfe9562f4f297ad2bc921ba30c3a6";
+  const testD =
+    "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+  async function makeValidSignedEvent(): Promise<NostrEvent> {
+    const credential = createCredential(validPubkey);
+    const ciphersuiteImpl = await getCiphersuiteImpl(
+      "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+      defaultCryptoProvider,
+    );
+    const keyPackage = await generateKeyPackage({
+      credential,
+      ciphersuiteImpl,
+    });
+    const template = await createKeyPackageEvent({
+      keyPackage: keyPackage.publicPackage,
+      d: testD,
+      relays: ["wss://relay.example.com"],
+    });
+    return {
+      ...template,
+      pubkey: validPubkey,
+      id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      sig: "sig",
+    };
+  }
+
+  it("should return no violations for a valid event", async () => {
+    const event = await makeValidSignedEvent();
+    const result = await softValidateKeyPackageEvent(event);
+    expect(result.keyPackage).toBeDefined();
+    expect(result.violations).toHaveLength(0);
+  });
+
+  it("should return warning-level violations for missing tags without throwing", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.filter((t) => t[0] !== "relays");
+    const result = await softValidateKeyPackageEvent(event);
+    expect(result.keyPackage).toBeDefined();
+    expect(result.violations).toHaveLength(1);
+    expect(result.violations[0].severity).toBe("warning");
+    expect(result.violations[0].check).toBe("relays_presence");
+  });
+
+  it("should collect multiple warnings at once", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.filter(
+      (t) => t[0] !== "relays" && t[0] !== "mls_protocol_version",
+    );
+    const result = await softValidateKeyPackageEvent(event);
+    expect(result.keyPackage).toBeDefined();
+    expect(result.violations.length).toBeGreaterThanOrEqual(2);
+    expect(result.violations.every((v) => v.severity === "warning")).toBe(true);
+  });
+
+  it("should return error severity for identity mismatch", async () => {
+    const event = await makeValidSignedEvent();
+    event.pubkey =
+      "0000000000000000000000000000000000000000000000000000000000000001";
+    const result = await softValidateKeyPackageEvent(event);
+    expect(result.keyPackage).toBeDefined();
+    const errors = result.violations.filter((v) => v.severity === "error");
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(errors.some((v) => v.check === "identity_binding")).toBe(true);
+  });
+
+  it("should return error severity for fabricated i tag", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "i" ? ["i", "deadbeef".repeat(4)] : t,
+    );
+    const result = await softValidateKeyPackageEvent(event);
+    expect(result.keyPackage).toBeDefined();
+    const errors = result.violations.filter((v) => v.severity === "error");
+    expect(errors.some((v) => v.check === "i_tag_mismatch")).toBe(true);
+  });
+
+  it("should return null keyPackage for wrong event kind (hard error)", async () => {
+    const event = await makeValidSignedEvent();
+    event.kind = 1;
+    const result = await softValidateKeyPackageEvent(event);
+    expect(result.keyPackage).toBeNull();
+    expect(result.violations[0].severity).toBe("error");
+    expect(result.violations[0].check).toBe("event_kind");
+  });
+
+  it("should return null keyPackage for decode failure (hard error)", async () => {
+    const event: NostrEvent = {
+      kind: ADDRESSABLE_KEY_PACKAGE_KIND,
+      id: "aaa",
+      pubkey: validPubkey,
+      created_at: 1000,
+      tags: [
+        ["d", testD],
+        ["encoding", "base64"],
+        ["mls_protocol_version", "1.0"],
+        ["mls_ciphersuite", "0x0001"],
+        ["mls_extensions", "0x000a", "0xf2ee"],
+        ["relays", "wss://relay.example.com"],
+        ["i", "deadbeef"],
+      ],
+      content: "bm90YXZhbGlka2V5cGFja2FnZQ==",
+      sig: "sig",
+    };
+    const result = await softValidateKeyPackageEvent(event);
+    expect(result.keyPackage).toBeNull();
+    expect(result.violations.some((v) => v.check === "content_decode")).toBe(
+      true,
+    );
+  });
+
+  it("should still decode keyPackage even with multiple warnings", async () => {
+    const event = await makeValidSignedEvent();
+    // Remove d tag and relays — both warnings, but content is still valid
+    event.tags = event.tags.filter(
+      (t) => t[0] !== "d" && t[0] !== "relays",
+    );
+    const result = await softValidateKeyPackageEvent(event);
+    expect(result.keyPackage).toBeDefined();
+    const warnings = result.violations.filter((v) => v.severity === "warning");
+    expect(warnings.length).toBeGreaterThanOrEqual(2);
   });
 });

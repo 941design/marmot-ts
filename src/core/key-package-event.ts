@@ -34,7 +34,11 @@ import {
   KEY_PACKAGE_RELAYS_TAG,
   KeyPackageClient,
   LAST_RESORT_EXTENSION_TYPE,
+  MARMOT_GROUP_DATA_EXTENSION_TYPE,
   MLS_VERSIONS,
+  REQUIRED_CIPHERSUITE_HEX,
+  REQUIRED_CIPHERSUITE_ID,
+  REQUIRED_MLS_VERSION,
 } from "./protocol.js";
 
 export type DeleteKeyPackageEventInput = string | NostrEvent;
@@ -124,6 +128,346 @@ export function getKeyPackage(event: NostrEvent): KeyPackage {
   if (!decoded) throw new Error("Failed to decode key package");
 
   return decoded;
+}
+
+/** Severity level for key package validation violations */
+export type ValidationSeverity = "error" | "warning";
+
+/** A single validation violation found during key package event validation */
+export type KeyPackageViolation = {
+  /** Which check failed (matches the 10 validation steps) */
+  check: string;
+  /** Human-readable description of the violation */
+  message: string;
+  /** Whether this violation is a hard error or a soft warning.
+   *  "error" = the event is fundamentally broken (wrong kind, decode failure,
+   *  identity spoofing). "warning" = MIP-00 non-compliance that doesn't
+   *  prevent the key package from being used (missing tags, wrong ciphersuite
+   *  value, etc). */
+  severity: ValidationSeverity;
+};
+
+/** Result of soft validation — always returns a decoded KeyPackage when
+ *  possible, plus any violations found. */
+export type KeyPackageValidationResult = {
+  /** The decoded KeyPackage, or null if decoding itself failed */
+  keyPackage: KeyPackage | null;
+  /** All violations found, ordered by check sequence */
+  violations: KeyPackageViolation[];
+};
+
+/**
+ * Collects all MIP-00 validation violations for a KeyPackage event.
+ *
+ * Unlike {@link validateKeyPackageEvent} (which throws on the first failure),
+ * this function runs every check and returns all violations together. Checks
+ * that would make the event completely unusable are marked `severity: "error"`;
+ * the rest are `severity: "warning"`.
+ *
+ * Hard errors (severity "error"):
+ *   1. Wrong event kind
+ *   9. Credential identity does not match event pubkey (spoofing)
+ *   10. `i` tag does not match computed KeyPackageRef (fabrication)
+ *   Content decode failure
+ *
+ * Soft warnings (severity "warning"):
+ *   2–8. Tag presence / format / value checks
+ */
+async function collectViolations(
+  event: NostrEvent,
+): Promise<KeyPackageValidationResult> {
+  const violations: KeyPackageViolation[] = [];
+
+  // 1. Event kind check — hard error
+  if (
+    event.kind !== KEY_PACKAGE_KIND &&
+    event.kind !== ADDRESSABLE_KEY_PACKAGE_KIND
+  ) {
+    violations.push({
+      check: "event_kind",
+      message: `Expected key package event (kind ${KEY_PACKAGE_KIND} or ${ADDRESSABLE_KEY_PACKAGE_KIND}), got kind ${event.kind}`,
+      severity: "error",
+    });
+    return { keyPackage: null, violations };
+  }
+
+  // 2. D-tag validation for kind 30443
+  if (event.kind === ADDRESSABLE_KEY_PACKAGE_KIND) {
+    const dValue = getTagValue(event, "d");
+    if (dValue === undefined) {
+      violations.push({
+        check: "d_tag_presence",
+        message: "Missing required d tag for kind:30443 KeyPackage event",
+        severity: "warning",
+      });
+    } else if (dValue === "") {
+      violations.push({
+        check: "d_tag_value",
+        message: "d tag value must not be empty",
+        severity: "warning",
+      });
+    }
+  }
+
+  // 3–4. Protocol version
+  const version = getTagValue(event, KEY_PACKAGE_MLS_VERSION_TAG);
+  if (version === undefined) {
+    violations.push({
+      check: "mls_protocol_version_presence",
+      message: "Missing required tag: mls_protocol_version",
+      severity: "warning",
+    });
+  } else if (version !== REQUIRED_MLS_VERSION) {
+    violations.push({
+      check: "mls_protocol_version_value",
+      message: `Unsupported protocol version: ${version}. Only version ${REQUIRED_MLS_VERSION} is supported per MIP-00`,
+      severity: "warning",
+    });
+  }
+
+  // 5. Ciphersuite
+  const ciphersuite = getTagValue(event, KEY_PACKAGE_CIPHER_SUITE_TAG);
+  if (ciphersuite === undefined) {
+    violations.push({
+      check: "mls_ciphersuite_presence",
+      message: "Missing required tag: mls_ciphersuite",
+      severity: "warning",
+    });
+  } else if (!/^0x[0-9a-fA-F]{4}$/.test(ciphersuite)) {
+    violations.push({
+      check: "mls_ciphersuite_format",
+      message: `Ciphersuite value must be 0x followed by 4 hex digits, got: ${ciphersuite}`,
+      severity: "warning",
+    });
+  } else if (parseInt(ciphersuite) !== REQUIRED_CIPHERSUITE_ID) {
+    violations.push({
+      check: "mls_ciphersuite_value",
+      message: `Unsupported ciphersuite: ${ciphersuite}. Only ${REQUIRED_CIPHERSUITE_HEX} (MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519) is supported`,
+      severity: "warning",
+    });
+  }
+
+  // 6. Extensions
+  const extensionsTag = event.tags.find(
+    (t) => t[0] === KEY_PACKAGE_EXTENSIONS_TAG,
+  );
+  if (!extensionsTag) {
+    violations.push({
+      check: "mls_extensions_presence",
+      message: "Missing required tag: mls_extensions",
+      severity: "warning",
+    });
+  } else {
+    const extensionValues = extensionsTag.slice(1);
+    if (extensionValues.length === 0) {
+      violations.push({
+        check: "mls_extensions_empty",
+        message: "Extensions tag must have at least one value",
+        severity: "warning",
+      });
+    } else {
+      for (const extValue of extensionValues) {
+        if (!/^0x[0-9a-fA-F]{4}$/.test(extValue)) {
+          violations.push({
+            check: "mls_extensions_format",
+            message: `Extension value must be 0x followed by 4 hex digits, got: ${extValue}`,
+            severity: "warning",
+          });
+        }
+      }
+      const normalizedExtensions = new Set(
+        extensionValues.map((v) => v.toLowerCase()),
+      );
+      const requiredExtensions: Array<{ id: number; name: string }> = [
+        { id: LAST_RESORT_EXTENSION_TYPE, name: "LastResort" },
+        { id: MARMOT_GROUP_DATA_EXTENSION_TYPE, name: "MarmotGroupData" },
+      ];
+      for (const req of requiredExtensions) {
+        const hex = `0x${req.id.toString(16).padStart(4, "0")}`;
+        if (!normalizedExtensions.has(hex)) {
+          violations.push({
+            check: "mls_extensions_required",
+            message: `Missing required extension: ${hex} (${req.name})`,
+            severity: "warning",
+          });
+        }
+      }
+    }
+  }
+
+  // 7. Relays
+  const relaysTag = event.tags.find((t) => t[0] === KEY_PACKAGE_RELAYS_TAG);
+  if (!relaysTag) {
+    violations.push({
+      check: "relays_presence",
+      message: "Missing required tag: relays",
+      severity: "warning",
+    });
+  } else {
+    const relayUrls = relaysTag.slice(1);
+    if (relayUrls.length === 0) {
+      violations.push({
+        check: "relays_empty",
+        message: "Relays tag must have at least one relay URL",
+        severity: "warning",
+      });
+    } else {
+      for (const url of relayUrls) {
+        if (!isValidRelayUrl(url)) {
+          violations.push({
+            check: "relays_invalid_url",
+            message: `Invalid relay URL: ${url}`,
+            severity: "warning",
+          });
+        }
+      }
+    }
+  }
+
+  // 8. `i` tag
+  const iTagValue = getTagValue(event, "i");
+  if (iTagValue === undefined) {
+    violations.push({
+      check: "i_tag_presence",
+      message: "Missing required tag: i",
+      severity: "warning",
+    });
+  } else {
+    if (iTagValue === "") {
+      violations.push({
+        check: "i_tag_empty",
+        message: "i tag value must not be empty",
+        severity: "warning",
+      });
+    } else if (!/^[0-9a-fA-F]+$/.test(iTagValue)) {
+      violations.push({
+        check: "i_tag_hex",
+        message: "i tag must contain valid hex-encoded data",
+        severity: "warning",
+      });
+    }
+    const iTag = event.tags.find((t) => t[0] === "i");
+    if (iTag && iTag.length !== 2) {
+      violations.push({
+        check: "i_tag_arity",
+        message: "i tag must contain exactly one value",
+        severity: "warning",
+      });
+    }
+  }
+
+  // Decode the key package (also validates encoding=base64)
+  let keyPackage: KeyPackage;
+  try {
+    keyPackage = getKeyPackage(event);
+  } catch (e) {
+    violations.push({
+      check: "content_decode",
+      message: e instanceof Error ? e.message : String(e),
+      severity: "error",
+    });
+    return { keyPackage: null, violations };
+  }
+
+  // 9. Credential identity binding — hard error (spoofing)
+  if (
+    keyPackage.leafNode.credential.credentialType !==
+    defaultCredentialTypes.basic
+  ) {
+    violations.push({
+      check: "credential_type",
+      message:
+        "Key package does not use a basic credential, cannot verify identity binding",
+      severity: "error",
+    });
+  } else {
+    const credentialPubkey = getCredentialPubkey(
+      keyPackage.leafNode.credential,
+    );
+    if (credentialPubkey !== event.pubkey) {
+      violations.push({
+        check: "identity_binding",
+        message: `Credential identity (${credentialPubkey}) does not match event pubkey (${event.pubkey})`,
+        severity: "error",
+      });
+    }
+  }
+
+  // 10. `i` tag cross-verification — hard error (fabrication)
+  if (iTagValue && /^[0-9a-fA-F]+$/.test(iTagValue)) {
+    const computedRef = await calculateKeyPackageRef(keyPackage);
+    const computedHex = bytesToHex(computedRef);
+    if (iTagValue.toLowerCase() !== computedHex.toLowerCase()) {
+      violations.push({
+        check: "i_tag_mismatch",
+        message:
+          "KeyPackageRef in i tag does not match computed value from content",
+        severity: "error",
+      });
+    }
+  }
+
+  return { keyPackage, violations };
+}
+
+/**
+ * Validates and parses a KeyPackage event with full MIP-00 compliance checks.
+ * Throws on the first violation found.
+ *
+ * For a non-throwing variant that collects warnings, use
+ * {@link softValidateKeyPackageEvent}.
+ *
+ * Checks performed (in order):
+ *
+ * 1. Event kind must be 443 or 30443
+ * 2. Kind 30443 events must have a non-empty `d` tag
+ * 3. Required tags: `mls_protocol_version`, `mls_ciphersuite`, `mls_extensions`, `relays`, `i`
+ * 4. Protocol version must be "1.0"
+ * 5. Ciphersuite must be 0x0001 (MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519)
+ * 6. Extensions must include 0x000a (LastResort) and 0xf2ee (MarmotGroupData)
+ * 7. Relays tag must contain at least one valid relay URL
+ * 8. `i` tag must contain a single valid hex value
+ * 9. Credential identity must match event pubkey (identity binding)
+ * 10. `i` tag value must match computed KeyPackageRef (content verification)
+ *
+ * @param event - The key package event to validate
+ * @returns The validated KeyPackage
+ * @throws Error describing which validation failed
+ */
+export async function validateKeyPackageEvent(
+  event: NostrEvent,
+): Promise<KeyPackage> {
+  const { keyPackage, violations } = await collectViolations(event);
+
+  if (violations.length > 0) {
+    throw new Error(violations[0].message);
+  }
+
+  // keyPackage is guaranteed non-null when there are no violations
+  return keyPackage!;
+}
+
+/**
+ * Validates a KeyPackage event and returns the result with any violations,
+ * without throwing.
+ *
+ * Hard errors (`severity: "error"`) indicate the event is fundamentally broken
+ * or potentially malicious (wrong kind, decode failure, identity spoofing,
+ * fabricated `i` tag). Callers SHOULD reject events with any error-level
+ * violations.
+ *
+ * Warnings (`severity: "warning"`) indicate MIP-00 non-compliance that doesn't
+ * prevent the key package from being cryptographically usable (missing metadata
+ * tags, wrong ciphersuite value, etc). Callers can log these and still proceed.
+ *
+ * @param event - The key package event to validate
+ * @returns The validation result with decoded KeyPackage (if possible) and all
+ *   violations found
+ */
+export async function softValidateKeyPackageEvent(
+  event: NostrEvent,
+): Promise<KeyPackageValidationResult> {
+  return collectViolations(event);
 }
 
 /** Gets the MLS protocol version from a kind 443 or kind 30443 event */

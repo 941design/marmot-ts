@@ -33,6 +33,9 @@ describe("exports", () => {
         "NoGroupRelaysError",
         "NoMarmotGroupDataError",
         "Proposals",
+        "REQUIRED_CIPHERSUITE_HEX",
+        "REQUIRED_CIPHERSUITE_ID",
+        "REQUIRED_MLS_VERSION",
         "WELCOME_EVENT_KIND",
         "calculateKeyPackageRef",
         "canonicalizeMimeType",
@@ -128,9 +131,11 @@ describe("exports", () => {
         "selectBestKeyPackage",
         "serializeApplicationRumor",
         "serializeClientState",
+        "softValidateKeyPackageEvent",
         "sortGroupCommits",
         "supportsMarmotExtensions",
         "unixNow",
+        "validateKeyPackageEvent",
       ]
     `);
   });
