@@ -74,6 +74,7 @@ export function createDeleteKeyPackageEvent(
       // String id only — no kind info available, emit e tag without k inference
       eTags.push(["e", e]);
     } else {
+      // TODO: Remove KEY_PACKAGE_KIND (443) acceptance after May 1, 2026
       if (
         e.kind !== KEY_PACKAGE_KIND &&
         e.kind !== ADDRESSABLE_KEY_PACKAGE_KIND
@@ -115,7 +116,14 @@ export function createDeleteKeyPackageEvent(
   };
 }
 
-/** Get the KeyPackage from a kind 443 or kind 30443 event */
+/**
+ * Decodes the MLS KeyPackage from a kind 443 or kind 30443 event.
+ *
+ * **SECURITY**: This is a decode-only function — it does NOT validate tag
+ * compliance, identity binding, or `i` tag integrity. For untrusted events
+ * (e.g. fetched from relays), use {@link validateKeyPackageEvent} or
+ * {@link softValidateKeyPackageEvent} instead.
+ */
 export function getKeyPackage(event: NostrEvent): KeyPackage {
   const encodingFormat = getEncodingTag(event);
   if (encodingFormat !== "base64") {
@@ -179,6 +187,7 @@ async function collectViolations(
   const violations: KeyPackageViolation[] = [];
 
   // 1. Event kind check — hard error
+  // TODO: Remove KEY_PACKAGE_KIND (443) acceptance after May 1, 2026
   if (
     event.kind !== KEY_PACKAGE_KIND &&
     event.kind !== ADDRESSABLE_KEY_PACKAGE_KIND
@@ -575,6 +584,12 @@ export function createKeyPackageEvent(
 async function createKeyPackageEventInternal(
   options: CreateKeyPackageEventOptions,
 ): Promise<EventTemplate> {
+  if (!options.identifier) {
+    throw new Error(
+      "d tag value must not be empty — kind 30443 events require a non-empty addressable identifier (NIP-33)",
+    );
+  }
+
   const { keyPackage, relays, client } = options;
 
   // Serialize the key package according to RFC 9420
@@ -712,6 +727,7 @@ export function selectBestKeyPackage(
 
   const valid: ValidCandidate[] = [];
 
+  // TODO: Remove KEY_PACKAGE_KIND (443) acceptance after May 1, 2026
   for (const event of candidates) {
     if (
       event.kind !== KEY_PACKAGE_KIND &&
@@ -755,6 +771,7 @@ export function selectBestKeyPackage(
  * Use during the migration period to discover KeyPackages regardless of
  * whether the publishing client has upgraded.
  */
+// TODO: Remove KEY_PACKAGE_KIND (443) filter after May 1, 2026
 export function keyPackageFilters(authors: string[]): Filter[] {
   return [
     { kinds: [KEY_PACKAGE_KIND], authors },

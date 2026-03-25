@@ -639,7 +639,7 @@ describe("selectBestKeyPackage", () => {
     });
     const template = await createKeyPackageEvent({
       keyPackage: keyPackage.publicPackage,
-      d: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      identifier: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
     });
     return {
       ...template,
@@ -813,7 +813,7 @@ describe("validateKeyPackageEvent", () => {
     });
     const template = await createKeyPackageEvent({
       keyPackage: keyPackage.publicPackage,
-      d: testD,
+      identifier: testD,
       relays: ["wss://relay.example.com"],
     });
     return {
@@ -1008,7 +1008,7 @@ describe("validateKeyPackageEvent", () => {
     // Build a kind 443 event with all required tags
     const template = await createKeyPackageEvent({
       keyPackage: keyPackage.publicPackage,
-      d: testD,
+      identifier: testD,
       relays: ["wss://relay.example.com"],
     });
     const event: NostrEvent = {
@@ -1041,7 +1041,7 @@ describe("softValidateKeyPackageEvent", () => {
     });
     const template = await createKeyPackageEvent({
       keyPackage: keyPackage.publicPackage,
-      d: testD,
+      identifier: testD,
       relays: ["wss://relay.example.com"],
     });
     return {
