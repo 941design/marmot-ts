@@ -210,23 +210,27 @@ describe("joinGroupFromWelcome — KeyPackage rotation grace window", () => {
     ).rejects.toThrow(/No matching KeyPackage/);
   });
 
-  it("prefers an active matching KP over a deprecated one when both could match (AC-GRACE-4)", async () => {
-    // Build a deprecated KP via the rotation flow above.
+  it("uses the deprecated KP as a fallback when only it matches the Welcome", async () => {
+    // Setup: the invitee has a deprecated KP (matches the welcome) plus a
+    // fresh active replacement KP produced by rotate() (whose keyPackageRef
+    // does NOT match the welcome — refs are content-derived). joinGroup
+    // must therefore consume the deprecated KP. This proves the
+    // grace-window fallback path on its own; it does NOT prove
+    // active-first ordering — that is unfalsifiable at the join layer
+    // because content-derived refs guarantee at most one KP matches any
+    // given Welcome. Ordering is asserted at the manager level (see the
+    // listForWelcomeDecrypt unit test).
     const { welcomeRumor, originalKeyPackageRef } =
       await setupRotatedKPScenario();
 
-    // The rotation flow already produced an active replacement KP. The
-    // Welcome rumor targets the deprecated one specifically, so the only
-    // candidate that will actually decrypt is the deprecated KP — but the
-    // selection logic must still walk active candidates first per the
-    // active-first contract. Verify the join succeeds (the deprecated KP
-    // is reachable as a fallback) and that the active KP is still in
-    // `list()` (regression on AC-GRACE-3).
     const { group } = await inviteeClient.joinGroupFromWelcome({
       welcomeRumor,
     });
     expect(group).toBeDefined();
 
+    // The active replacement KP is still present and untouched (no
+    // regression on AC-GRACE-3: deprecated entries did not leak into
+    // list()).
     const active = await inviteeClient.keyPackages.list();
     expect(active.length).toBeGreaterThanOrEqual(1);
     expect(

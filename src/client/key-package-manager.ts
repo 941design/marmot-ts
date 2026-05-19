@@ -810,7 +810,10 @@ export class KeyPackageManager extends EventEmitter<KeyPackageManagerEvents> {
    * contract and {@link cleanupDeprecated} for the grace-window cutoff.
    */
   async listForWelcomeDecrypt(): Promise<ListedKeyPackage[]> {
-    const all = await this.storeList({ includeDeprecated: true });
+    // Route through #buildSnapshot so the published-array normalization
+    // (undefined → []) matches list()'s contract — keeps the public
+    // ListedKeyPackage shape consistent across both public accessors.
+    const all = await this.#buildSnapshot({ includeDeprecated: true });
     // Stable sort: active first, deprecated last. Within each partition the
     // original storage order is preserved.
     return all.sort(
@@ -1032,8 +1035,10 @@ export class KeyPackageManager extends EventEmitter<KeyPackageManagerEvents> {
   // Private helpers
   // ---------------------------------------------------------------------------
 
-  async #buildSnapshot(): Promise<ListedKeyPackage[]> {
-    const local = await this.storeList();
+  async #buildSnapshot(
+    options: { includeDeprecated?: boolean } = {},
+  ): Promise<ListedKeyPackage[]> {
+    const local = await this.storeList(options);
     return local.map((pkg) => ({
       ...pkg,
       published: pkg.published ?? [],

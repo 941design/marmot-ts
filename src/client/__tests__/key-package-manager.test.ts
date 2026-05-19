@@ -1352,38 +1352,67 @@ describe("KeyPackageManager", () => {
   // -------------------------------------------------------------------------
 
   describe("listForWelcomeDecrypt()", () => {
-    it("includes both active and deprecated entries, active first", async () => {
+    it("returns active entries before deprecated entries (AC-GRACE-4 active-first ordering)", async () => {
       const { manager } = makeManager(network, account, TEST_CLIENT_ID);
 
-      // Create two key packages, both initially active.
-      const kp1 = await manager.create({
+      // Create kpDeprecated FIRST, then kpActive — proving the ordering is
+      // active-first rather than insertion-order. (If the sort were a
+      // no-op, the deprecated entry would come first because it was
+      // stored first.)
+      const kpDeprecated = await manager.create({
         relays: ["wss://relay.test"],
-        identifier: "slot-a",
+        identifier: "slot-deprecated",
       });
-      const kp2 = await manager.create({
+      const kpActive = await manager.create({
         relays: ["wss://relay.test"],
-        identifier: "slot-b",
+        identifier: "slot-active",
       });
 
-      // Deprecate kp1.
       await manager.markDeprecated(
-        kp1.keyPackageRef,
+        kpDeprecated.keyPackageRef,
         Math.floor(Date.now() / 1000),
       );
 
       const result = await manager.listForWelcomeDecrypt();
 
       expect(result).toHaveLength(2);
-      // Active entry (kp2) comes first
+      // Active entry sorts to the front despite being added second.
       expect(Buffer.from(result[0].keyPackageRef).toString("hex")).toBe(
-        Buffer.from(kp2.keyPackageRef).toString("hex"),
+        Buffer.from(kpActive.keyPackageRef).toString("hex"),
       );
       expect(result[0].deprecatedAt).toBeUndefined();
-      // Deprecated entry (kp1) comes after
+      // Deprecated entry sorts to the back despite being added first.
       expect(Buffer.from(result[1].keyPackageRef).toString("hex")).toBe(
-        Buffer.from(kp1.keyPackageRef).toString("hex"),
+        Buffer.from(kpDeprecated.keyPackageRef).toString("hex"),
       );
       expect(result[1].deprecatedAt).toBeDefined();
+    });
+
+    it("normalizes published to [] for unpublished entries (parity with list())", async () => {
+      // listForWelcomeDecrypt is a public accessor that must return the
+      // same ListedKeyPackage shape as list(). #buildSnapshot
+      // normalizes published === undefined to [] for entries that have
+      // never been published; verify that normalization is preserved.
+      const { store } = makeManager(network, account, TEST_CLIENT_ID);
+      const ciphersuite = await getCiphersuiteImpl(
+        "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+        defaultCryptoProvider,
+      );
+      const pubkey = await account.signer.getPublicKey();
+      const kp = await generateKeyPackage({
+        credential: createCredential(pubkey),
+        ciphersuiteImpl: ciphersuite,
+      });
+      // store.add bypasses create() — no published events recorded.
+      await store.add(kp);
+
+      const fromList = await store.list();
+      const fromWelcome = await store.listForWelcomeDecrypt();
+
+      expect(fromList).toHaveLength(1);
+      expect(fromWelcome).toHaveLength(1);
+      expect(fromList[0].published).toEqual([]);
+      expect(fromWelcome[0].published).toEqual([]);
     });
 
     it("returns only active entries when none are deprecated", async () => {
