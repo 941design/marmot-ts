@@ -1,0 +1,33 @@
+{
+  "epic_name": "welcome-grace-window",
+  "status": "done",
+  "phase": "COMPLETE",
+  "created_at": "2026-05-19T00:00:00Z",
+  "updated_at": "2026-05-19T00:00:00Z",
+  "completed_at": "2026-05-19T00:00:00Z",
+  "pre_existing_dirty_files": [
+    ".clauded.yaml",
+    "specs/marmot-ts-rumor-sender-authentication.md",
+    "specs/marmot-ts-welcome-grace-window.md",
+    "specs/marmot-ts-welcome-grace-window-2.md"
+  ],
+  "completed_stories": ["S1-welcome-grace-window"],
+  "escalated_stories": [],
+  "phase_history": [
+    {
+      "phase": "SPEC_VALIDATED",
+      "timestamp": "2026-05-19T00:00:00Z",
+      "trigger": "validation_passed"
+    },
+    {
+      "phase": "STORIES_PLANNED",
+      "timestamp": "2026-05-19T00:00:00Z",
+      "trigger": "single_story_planned"
+    },
+    {
+      "phase": "COMPLETE",
+      "timestamp": "2026-05-19T00:00:00Z",
+      "trigger": "all_tests_pass"
+    }
+  ]
+}

@@ -210,12 +210,16 @@ export class MarmotClient<
       welcome.cipherSuite,
     );
 
-    const allKeyPackages = await this.keyPackages.list();
+    // Enumerate via listForWelcomeDecrypt so a Welcome built against a
+    // rotated-but-still-in-grace KeyPackage can be decrypted. Active KPs
+    // come first; deprecated KPs are a within-grace-window fallback.
+    const allKeyPackages = await this.keyPackages.listForWelcomeDecrypt();
     const candidatePackages: Array<{
       publicPackage: KeyPackage;
       privatePackage: PrivateKeyPackage;
       keyPackageRef: Uint8Array;
       hasMatchingSecret: boolean;
+      deprecatedAt?: number;
     }> = [];
 
     // Collect all key packages with matching cipher suite and compute their KeyPackageRef
@@ -245,6 +249,9 @@ export class MarmotClient<
         privatePackage: privateKeyPackage,
         keyPackageRef: keyPackage.keyPackageRef,
         hasMatchingSecret,
+        ...(keyPackage.deprecatedAt !== undefined
+          ? { deprecatedAt: keyPackage.deprecatedAt }
+          : {}),
       });
     }
 
@@ -264,6 +271,7 @@ export class MarmotClient<
     let clientState: ClientState | null = null;
     let lastError: Error | null = null;
     let consumedKeyPackageRef: Uint8Array | null = null;
+    let consumedDeprecatedAt: number | undefined;
 
     for (const keyPackage of prioritizedKeyPackages) {
       try {
@@ -279,10 +287,20 @@ export class MarmotClient<
           privateKeys: keyPackage.privatePackage,
         });
         consumedKeyPackageRef = keyPackage.keyPackageRef;
+        consumedDeprecatedAt = keyPackage.deprecatedAt;
         break;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
       }
+    }
+
+    if (clientState && consumedDeprecatedAt !== undefined) {
+      // Diagnostic: a rotation race occurred and the grace window absorbed
+      // it. Consumers (e.g. notestr-web mls-trace) can surface this for UX.
+      log(
+        "joined group via deprecated KeyPackage (deprecatedAt=%d, grace-window match)",
+        consumedDeprecatedAt,
+      );
     }
 
     if (!clientState) {

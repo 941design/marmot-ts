@@ -461,17 +461,22 @@ export class KeyPackageManager extends EventEmitter<KeyPackageManagerEvents> {
   }
 
   /**
-   * Lists all active {@link LocalKeyPackage} entries (those with private material),
+   * Lists all {@link LocalKeyPackage} entries (those with private material),
    * without the private package itself.
    *
-   * Deprecated entries (those with `deprecatedAt` set) are excluded from the
-   * listing. Use {@link get} to retrieve a specific entry by ref regardless of
-   * deprecated status.
+   * By default, deprecated entries (those with `deprecatedAt` set) are
+   * excluded. Pass `includeDeprecated: true` to include them — used by
+   * {@link listForWelcomeDecrypt} so the welcome-decrypt path can recover
+   * Welcomes built against a rotated-but-still-in-grace KeyPackage. See
+   * {@link markDeprecated} for the grace-window contract.
    *
-   * {@link TrackedKeyPackage} entries are also excluded — use {@link get} to
+   * {@link TrackedKeyPackage} entries are excluded — use {@link get} to
    * retrieve a specific tracked entry by ref.
    */
-  private async storeList(): Promise<ListedKeyPackage[]> {
+  private async storeList(
+    options: { includeDeprecated?: boolean } = {},
+  ): Promise<ListedKeyPackage[]> {
+    const { includeDeprecated = false } = options;
     const allKeys = await this.store.keys();
 
     const packages = await Promise.all(
@@ -483,15 +488,25 @@ export class KeyPackageManager extends EventEmitter<KeyPackageManagerEvents> {
         (pkg): pkg is LocalKeyPackage =>
           pkg !== null &&
           pkg.privatePackage !== undefined &&
-          pkg.deprecatedAt === undefined,
+          (includeDeprecated || pkg.deprecatedAt === undefined),
       )
-      .map(({ keyPackageRef, publicPackage, identifier, published, used }) => ({
-        keyPackageRef,
-        publicPackage,
-        ...(identifier !== undefined ? { identifier } : {}),
-        ...(published !== undefined ? { published } : {}),
-        ...(used !== undefined ? { used } : {}),
-      }));
+      .map(
+        ({
+          keyPackageRef,
+          publicPackage,
+          identifier,
+          published,
+          used,
+          deprecatedAt,
+        }) => ({
+          keyPackageRef,
+          publicPackage,
+          ...(identifier !== undefined ? { identifier } : {}),
+          ...(published !== undefined ? { published } : {}),
+          ...(used !== undefined ? { used } : {}),
+          ...(deprecatedAt !== undefined ? { deprecatedAt } : {}),
+        }),
+      );
   }
 
   // ---------------------------------------------------------------------------
@@ -773,9 +788,36 @@ export class KeyPackageManager extends EventEmitter<KeyPackageManagerEvents> {
   /**
    * Lists all locally stored key packages, each enriched with their published
    * Nostr events.
+   *
+   * Deprecated entries are excluded. For the welcome-decrypt path (which must
+   * recover Welcomes targeting a rotated-but-still-in-grace KeyPackage), use
+   * {@link listForWelcomeDecrypt} instead.
    */
   async list(): Promise<ListedKeyPackage[]> {
     return this.#buildSnapshot();
+  }
+
+  /**
+   * Lists local key packages eligible for decrypting an incoming Welcome —
+   * active entries followed by entries still inside the deprecation grace
+   * window. Used by {@link MarmotClient.joinGroupFromWelcome} so a Welcome
+   * built against a rotated KeyPackage can still be consumed while the new
+   * KP propagates to relays.
+   *
+   * Active entries appear first so the existing happy-path candidate
+   * selection is unchanged; deprecated entries (those with `deprecatedAt`
+   * set) appear after them. See {@link markDeprecated} for the storage-side
+   * contract and {@link cleanupDeprecated} for the grace-window cutoff.
+   */
+  async listForWelcomeDecrypt(): Promise<ListedKeyPackage[]> {
+    const all = await this.storeList({ includeDeprecated: true });
+    // Stable sort: active first, deprecated last. Within each partition the
+    // original storage order is preserved.
+    return all.sort(
+      (a, b) =>
+        (a.deprecatedAt === undefined ? 0 : 1) -
+        (b.deprecatedAt === undefined ? 0 : 1),
+    );
   }
 
   /** Returns the number of locally stored key packages. */

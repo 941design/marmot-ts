@@ -1113,9 +1113,7 @@ describe("KeyPackageManager", () => {
       const requestSpy = vi.spyOn(network, "request");
       const targetPubkey = await account.signer.getPublicKey();
 
-      await manager.fetchKeyPackagesForUser(targetPubkey, [
-        "wss://relay.test",
-      ]);
+      await manager.fetchKeyPackagesForUser(targetPubkey, ["wss://relay.test"]);
 
       expect(requestSpy).toHaveBeenCalledOnce();
       const [relays, filters] = requestSpy.mock.calls[0];
@@ -1346,6 +1344,138 @@ describe("KeyPackageManager", () => {
       // Passing maxAgeSec=0 expires entries deprecated at or before "now"
       const countExpired = await manager.cleanupDeprecated(0);
       expect(countExpired).toBe(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // KeyPackageManager > listForWelcomeDecrypt()
+  // -------------------------------------------------------------------------
+
+  describe("listForWelcomeDecrypt()", () => {
+    it("includes both active and deprecated entries, active first", async () => {
+      const { manager } = makeManager(network, account, TEST_CLIENT_ID);
+
+      // Create two key packages, both initially active.
+      const kp1 = await manager.create({
+        relays: ["wss://relay.test"],
+        identifier: "slot-a",
+      });
+      const kp2 = await manager.create({
+        relays: ["wss://relay.test"],
+        identifier: "slot-b",
+      });
+
+      // Deprecate kp1.
+      await manager.markDeprecated(
+        kp1.keyPackageRef,
+        Math.floor(Date.now() / 1000),
+      );
+
+      const result = await manager.listForWelcomeDecrypt();
+
+      expect(result).toHaveLength(2);
+      // Active entry (kp2) comes first
+      expect(Buffer.from(result[0].keyPackageRef).toString("hex")).toBe(
+        Buffer.from(kp2.keyPackageRef).toString("hex"),
+      );
+      expect(result[0].deprecatedAt).toBeUndefined();
+      // Deprecated entry (kp1) comes after
+      expect(Buffer.from(result[1].keyPackageRef).toString("hex")).toBe(
+        Buffer.from(kp1.keyPackageRef).toString("hex"),
+      );
+      expect(result[1].deprecatedAt).toBeDefined();
+    });
+
+    it("returns only active entries when none are deprecated", async () => {
+      const { manager } = makeManager(network, account, TEST_CLIENT_ID);
+
+      await manager.create({
+        relays: ["wss://relay.test"],
+        identifier: "slot-a",
+      });
+
+      const result = await manager.listForWelcomeDecrypt();
+      expect(result).toHaveLength(1);
+      expect(result[0].deprecatedAt).toBeUndefined();
+    });
+
+    it("returns deprecated entries even when no active entries remain", async () => {
+      const { manager } = makeManager(network, account, TEST_CLIENT_ID);
+
+      const kp = await manager.create({
+        relays: ["wss://relay.test"],
+        identifier: "slot-a",
+      });
+      await manager.markDeprecated(
+        kp.keyPackageRef,
+        Math.floor(Date.now() / 1000),
+      );
+
+      // list() drops the deprecated entry — regression guard on AC-GRACE-3.
+      const active = await manager.list();
+      expect(active).toHaveLength(0);
+
+      // listForWelcomeDecrypt still surfaces it.
+      const result = await manager.listForWelcomeDecrypt();
+      expect(result).toHaveLength(1);
+      expect(result[0].deprecatedAt).toBeDefined();
+    });
+
+    it("excludes entries that have been cleaned up via cleanupDeprecated()", async () => {
+      const { manager } = makeManager(network, account, TEST_CLIENT_ID);
+
+      const kp = await manager.create({
+        relays: ["wss://relay.test"],
+        identifier: "slot-a",
+      });
+      await manager.markDeprecated(
+        kp.keyPackageRef,
+        Math.floor(Date.now() / 1000),
+      );
+
+      // Expire and remove immediately.
+      await manager.cleanupDeprecated(0);
+
+      const result = await manager.listForWelcomeDecrypt();
+      expect(result).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // KeyPackageManager > list() regression on deprecation semantics
+  // -------------------------------------------------------------------------
+
+  describe("list() — deprecation regression guard (AC-GRACE-3)", () => {
+    it("excludes deprecated entries", async () => {
+      const { manager } = makeManager(network, account, TEST_CLIENT_ID);
+
+      const kp = await manager.create({
+        relays: ["wss://relay.test"],
+        identifier: "slot-a",
+      });
+      await manager.markDeprecated(
+        kp.keyPackageRef,
+        Math.floor(Date.now() / 1000),
+      );
+
+      const result = await manager.list();
+      expect(result).toHaveLength(0);
+    });
+
+    it("count() excludes deprecated entries", async () => {
+      const { manager } = makeManager(network, account, TEST_CLIENT_ID);
+
+      const kp = await manager.create({
+        relays: ["wss://relay.test"],
+        identifier: "slot-a",
+      });
+      expect(await manager.count()).toBe(1);
+
+      await manager.markDeprecated(
+        kp.keyPackageRef,
+        Math.floor(Date.now() / 1000),
+      );
+      expect(await manager.count()).toBe(0);
     });
   });
 });
