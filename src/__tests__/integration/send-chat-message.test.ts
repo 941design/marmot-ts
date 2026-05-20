@@ -138,7 +138,8 @@ describe("MarmotGroup.sendChatMessage", () => {
       keyPackageStore: new InMemoryKeyValueStore<StoredKeyPackage>(),
       signer: inviteeAccount.signer,
       network: mockNetwork,
-      clientId: "test-invitee-device",
+      clientId:
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     });
   });
 
@@ -332,7 +333,8 @@ describe("MarmotGroup.sendChatMessage", () => {
       keyPackageStore: new InMemoryKeyValueStore<StoredKeyPackage>(),
       signer: inviteeAccount.signer,
       network: mockNetwork,
-      clientId: "test-invitee-device",
+      clientId:
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       historyFactory: () => history,
     });
 
@@ -387,7 +389,8 @@ describe("MarmotGroup.sendChatMessage", () => {
       keyPackageStore: inviteeKeyPackageBackend,
       signer: inviteeAccount.signer,
       network: mockNetwork,
-      clientId: "test-invitee-device",
+      clientId:
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     });
 
     const { inviteeGroup } = await setupTwoMemberGroup(

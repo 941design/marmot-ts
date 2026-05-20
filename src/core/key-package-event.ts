@@ -1,5 +1,5 @@
 /** @module @category Core - Key Package Event */
-import { bytesToHex } from "@noble/hashes/utils.js";
+import { bytesToHex, randomBytes } from "@noble/hashes/utils.js";
 import { EventTemplate, NostrEvent } from "applesauce-core/helpers/event";
 import { Filter } from "applesauce-core/helpers/filter";
 import {
@@ -40,6 +40,21 @@ import {
   REQUIRED_CIPHERSUITE_ID,
   REQUIRED_MLS_VERSION,
 } from "./protocol.js";
+
+export const KEY_PACKAGE_PROPOSALS_TAG = "mls_proposals";
+/** MIP-00: self_remove (0x000a) is the only non-default proposal Marmot mandates. */
+export const MIP00_SELF_REMOVE_PROPOSAL = "0x000a";
+
+const D_TAG_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * Mints a MIP-00-conformant kind-30443 slot identifier:
+ * 32 cryptographically random bytes encoded as 64 lowercase hex chars.
+ * Use as the `d` tag value when publishing a fresh KeyPackage.
+ */
+export function generateKeyPackageSlot(): string {
+  return bytesToHex(randomBytes(32));
+}
 
 export type DeleteKeyPackageEventInput = string | NostrEvent;
 
@@ -215,6 +230,14 @@ async function collectViolations(
         message: "d tag value must not be empty",
         severity: "warning",
       });
+    } else if (!D_TAG_RE.test(dValue)) {
+      violations.push({
+        check: "d_tag_shape",
+        message:
+          "d tag must be exactly 64 lowercase hex characters " +
+          "(MIP-00 §addressable-key-packages, MDK key_packages.rs)",
+        severity: "warning",
+      });
     }
   }
 
@@ -365,6 +388,29 @@ async function collectViolations(
     }
   }
 
+  // 8.5. mls_proposals tag — required on kind 30443
+  if (event.kind === ADDRESSABLE_KEY_PACKAGE_KIND) {
+    const proposalsTag = event.tags.find(
+      (t) => t[0] === KEY_PACKAGE_PROPOSALS_TAG,
+    );
+    if (!proposalsTag) {
+      violations.push({
+        check: "mls_proposals_presence",
+        message: "Missing required tag: mls_proposals",
+        severity: "warning",
+      });
+    } else if (
+      proposalsTag.length !== 2 ||
+      proposalsTag[1] !== MIP00_SELF_REMOVE_PROPOSAL
+    ) {
+      violations.push({
+        check: "mls_proposals_value",
+        message: 'Invalid mls_proposals tag value, expected "0x000a"',
+        severity: "warning",
+      });
+    }
+  }
+
   // Decode the key package (also validates encoding=base64)
   let keyPackage: KeyPackage;
   try {
@@ -430,7 +476,7 @@ async function collectViolations(
  *
  * 1. Event kind must be 443 or 30443
  * 2. Kind 30443 events must have a non-empty `d` tag
- * 3. Required tags: `mls_protocol_version`, `mls_ciphersuite`, `mls_extensions`, `relays`, `i`
+ * 3. Required tags: `mls_protocol_version`, `mls_ciphersuite`, `mls_extensions`, `mls_proposals`, `relays`, `i`
  * 4. Protocol version must be "1.0"
  * 5. Ciphersuite must be 0x0001 (MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519)
  * 6. Extensions must include 0x000a (LastResort) and 0xf2ee (MarmotGroupData)
@@ -586,7 +632,15 @@ async function createKeyPackageEventInternal(
 ): Promise<EventTemplate> {
   if (!options.identifier) {
     throw new Error(
-      "d tag value must not be empty — kind 30443 events require a non-empty addressable identifier (NIP-33)",
+      "d tag value must not be empty — kind 30443 events require a 64-char lowercase hex slot identifier (MIP-00). " +
+        "Use generateKeyPackageSlot() to mint one.",
+    );
+  }
+  if (!D_TAG_RE.test(options.identifier)) {
+    throw new Error(
+      `d tag value "${options.identifier}" is not a valid MIP-00 slot identifier (must match /^[0-9a-f]{64}$/). ` +
+        'MDK rejects non-conformant slots with "d tag must be exactly 64 hex characters". ' +
+        "Use generateKeyPackageSlot() to mint one.",
     );
   }
 
@@ -650,6 +704,9 @@ async function createKeyPackageEventInternal(
     [KEY_PACKAGE_CIPHER_SUITE_TAG, ciphersuiteHex],
     [KEY_PACKAGE_EXTENSIONS_TAG, ...filteredExtensionTypes],
     ["encoding", "base64"],
+    // MIP-00: required non-default proposal type (self_remove). MDK enforces exactly two
+    // entries with the second being "0x000a" (slice.len() == 2), so this is hard-coded.
+    [KEY_PACKAGE_PROPOSALS_TAG, MIP00_SELF_REMOVE_PROPOSAL],
   );
 
   // MIP-00: required KeyPackageRef tag ("i")

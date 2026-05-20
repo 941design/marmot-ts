@@ -1,5 +1,18 @@
 # @internet-privacy/marmot-ts
 
+## 0.6.0
+
+### Minor Changes
+
+- MIP-00 compliance: `createKeyPackageEvent` now emits `["mls_proposals", "0x000a"]` on every kind-30443 event, bringing it into parity with MDK's `parse_key_package`. Consumers using MDK (notestr-cli, Rust-based admin clients) can now parse `marmot-ts`-published KeyPackages.
+- Export `generateKeyPackageSlot(): string` — mints a MIP-00-conformant 64-char lowercase hex slot identifier. Use as the `d` tag value when publishing a KeyPackage.
+- `softValidateKeyPackageEvent` and `validateKeyPackageEvent` now report `d_tag_shape`, `mls_proposals_presence`, and `mls_proposals_value` violations on kind-30443 events.
+
+### Breaking
+
+- `createKeyPackageEvent` throws when `identifier` does not match `/^[0-9a-f]{64}$/`. Any consumer that passes a free-form string (e.g. `"my-app-desktop"`, `"notestr-<uuid>"`) will get a runtime error on upgrade. Use `generateKeyPackageSlot()` to mint a conformant slot identifier.
+- `KeyPackageManager` consumers: validate the stored `clientId` against `/^[0-9a-f]{64}$/` on app startup and regenerate via `generateKeyPackageSlot()` if it does not match.
+
 ## 0.5.1
 
 ### Patch Changes

@@ -15,6 +15,7 @@ import { generateKeyPackage } from "../key-package.js";
 import {
   createDeleteKeyPackageEvent,
   createKeyPackageEvent,
+  generateKeyPackageSlot,
   getKeyPackage,
   getKeyPackageIdentifier,
   keyPackageFilters,
@@ -481,6 +482,72 @@ describe("createKeyPackageEvent", () => {
     };
 
     expect(() => getKeyPackage(hexEvent)).toThrow(/encoding=base64 tag/i);
+  });
+});
+
+describe("generateKeyPackageSlot", () => {
+  it("produces a 64-char lowercase hex string", () => {
+    const slot = generateKeyPackageSlot();
+    expect(slot).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("produces unique values across repeated calls", () => {
+    const slots = new Set(Array.from({ length: 100 }, () => generateKeyPackageSlot()));
+    expect(slots.size).toBe(100);
+  });
+});
+
+describe("createKeyPackageEvent — MIP-00 slot validation", () => {
+  const validPubkey =
+    "884704bd421671e01c13f854d2ce23ce2a5bfe9562f4f297ad2bc921ba30c3a6";
+
+  async function makeKeyPackage() {
+    const credential = createCredential(validPubkey);
+    const ciphersuiteImpl = await getCiphersuiteImpl(
+      "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+      defaultCryptoProvider,
+    );
+    return generateKeyPackage({ credential, ciphersuiteImpl });
+  }
+
+  it("emits mls_proposals tag with value 0x000a on kind 30443", async () => {
+    const kp = await makeKeyPackage();
+    const event = await createKeyPackageEvent({
+      keyPackage: kp.publicPackage,
+      identifier: generateKeyPackageSlot(),
+    });
+    const tag = event.tags.find((t) => t[0] === "mls_proposals");
+    expect(tag).toEqual(["mls_proposals", "0x000a"]);
+  });
+
+  it("throws on non-64-hex identifier (free-form string)", async () => {
+    const kp = await makeKeyPackage();
+    await expect(
+      createKeyPackageEvent({
+        keyPackage: kp.publicPackage,
+        identifier: "notestr-079251af-1234-5678-abcd-ef0123456789",
+      }),
+    ).rejects.toThrow(/generateKeyPackageSlot/);
+  });
+
+  it("throws on uppercase hex identifier", async () => {
+    const kp = await makeKeyPackage();
+    await expect(
+      createKeyPackageEvent({
+        keyPackage: kp.publicPackage,
+        identifier: "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF",
+      }),
+    ).rejects.toThrow(/generateKeyPackageSlot/);
+  });
+
+  it("throws on empty identifier with message naming generateKeyPackageSlot", async () => {
+    const kp = await makeKeyPackage();
+    await expect(
+      createKeyPackageEvent({
+        keyPackage: kp.publicPackage,
+        identifier: "",
+      }),
+    ).rejects.toThrow(/generateKeyPackageSlot/);
   });
 });
 
@@ -995,6 +1062,50 @@ describe("validateKeyPackageEvent", () => {
     );
   });
 
+  it("should reject kind 30443 with non-64-hex d tag value", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "d" ? ["d", "notestr-079251af-short"] : t,
+    );
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /d tag must be exactly 64 lowercase hex characters/,
+    );
+  });
+
+  it("should reject kind 30443 with missing mls_proposals tag", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.filter((t) => t[0] !== "mls_proposals");
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Missing required tag: mls_proposals/,
+    );
+  });
+
+  it("should reject kind 30443 with wrong mls_proposals value", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "mls_proposals" ? ["mls_proposals", "0x000b"] : t,
+    );
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Invalid mls_proposals tag value/,
+    );
+  });
+
+  it("should reject kind 30443 with extra mls_proposals entries", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "mls_proposals" ? ["mls_proposals", "0x000a", "0x0001"] : t,
+    );
+    await expect(validateKeyPackageEvent(event)).rejects.toThrow(
+      /Invalid mls_proposals tag value/,
+    );
+  });
+
+  it("round-trip: createKeyPackageEvent output passes validateKeyPackageEvent with zero violations", async () => {
+    const event = await makeValidSignedEvent();
+    const kp = await validateKeyPackageEvent(event);
+    expect(kp).toBeDefined();
+  });
+
   it("should accept legacy kind 443 event (no d tag required)", async () => {
     const credential = createCredential(validPubkey);
     const ciphersuiteImpl = await getCiphersuiteImpl(
@@ -1109,6 +1220,50 @@ describe("softValidateKeyPackageEvent", () => {
     expect(result.keyPackage).toBeNull();
     expect(result.violations[0].severity).toBe("error");
     expect(result.violations[0].check).toBe("event_kind");
+  });
+
+  it("should report d_tag_shape warning for non-64-hex d tag on kind 30443", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "d" ? ["d", "notestr-shortslug"] : t,
+    );
+    const result = await softValidateKeyPackageEvent(event);
+    expect(result.violations.some((v) => v.check === "d_tag_shape")).toBe(true);
+    expect(
+      result.violations.find((v) => v.check === "d_tag_shape")?.severity,
+    ).toBe("warning");
+  });
+
+  it("should report mls_proposals_presence warning when tag absent on kind 30443", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.filter((t) => t[0] !== "mls_proposals");
+    const result = await softValidateKeyPackageEvent(event);
+    expect(
+      result.violations.some((v) => v.check === "mls_proposals_presence"),
+    ).toBe(true);
+  });
+
+  it("should report mls_proposals_value warning for wrong value on kind 30443", async () => {
+    const event = await makeValidSignedEvent();
+    event.tags = event.tags.map((t) =>
+      t[0] === "mls_proposals" ? ["mls_proposals", "0x000b"] : t,
+    );
+    const result = await softValidateKeyPackageEvent(event);
+    expect(
+      result.violations.some((v) => v.check === "mls_proposals_value"),
+    ).toBe(true);
+  });
+
+  it("should NOT report mls_proposals or d_tag_shape violations on kind 443 (back-compat)", async () => {
+    const event = await makeValidSignedEvent();
+    // Override to kind 443 with a non-hex d (kind 443 has no d tag requirement)
+    event.kind = KEY_PACKAGE_KIND;
+    event.tags = event.tags
+      .filter((t) => t[0] !== "mls_proposals")
+      .map((t) => (t[0] === "d" ? ["d", "free-form-value"] : t));
+    const result = await softValidateKeyPackageEvent(event);
+    expect(result.violations.some((v) => v.check === "mls_proposals_presence")).toBe(false);
+    expect(result.violations.some((v) => v.check === "d_tag_shape")).toBe(false);
   });
 
   it("should return null keyPackage for decode failure (hard error)", async () => {

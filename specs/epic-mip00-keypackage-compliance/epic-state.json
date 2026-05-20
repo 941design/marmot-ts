@@ -1,0 +1,22 @@
+{
+  "epic_name": "mip00-keypackage-compliance",
+  "status": "done",
+  "phase": "COMPLETE",
+  "created_at": "2026-05-20T15:42:40Z",
+  "updated_at": "2026-05-20T15:42:40Z",
+  "pre_existing_dirty_files": [
+    ".claude/settings.local.json",
+    ".claude/verification-results.csv",
+    ".clauded.yaml",
+    "specs/epic-mip00-keypackage-compliance/spec.md",
+    "specs/marmot-ts-mip00-keypackage-compliance.md",
+    "specs/marmot-ts-rumor-sender-authentication.md",
+    "specs/marmot-ts-welcome-grace-window-2.md",
+    "specs/marmot-ts-welcome-grace-window.md"
+  ],
+  "completed_stories": ["S1"],
+  "escalated_stories": [],
+  "phase_history": [
+    {"phase": "SPEC_VALIDATED", "timestamp": "2026-05-20T15:42:40Z", "trigger": "validation_passed"}
+  ]
+}

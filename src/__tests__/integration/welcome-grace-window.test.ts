@@ -62,7 +62,8 @@ describe("joinGroupFromWelcome — KeyPackage rotation grace window", () => {
       keyPackageStore: new InMemoryKeyValueStore<StoredKeyPackage>(),
       signer: inviteeAccount.signer,
       network: mockNetwork,
-      clientId: "test-invitee-device",
+      clientId:
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     });
   });
 

@@ -58,11 +58,37 @@ interface GenericKeyValueStore<T> {
 
 Any backend that matches this shape works. [LocalForage](https://github.com/localForage/localForage) instances satisfy it directly:
 
-```ts
+To begin using the client, you need an `EventSigner` (e.g. from `applesauce-core`), a `NostrNetworkInterface` implementation, and two `GenericKeyValueStore` backends — one for serialized group state bytes and one for key package metadata.
+
+```typescript
+import { MarmotClient, generateKeyPackageSlot } from "@internet-privacy/marmot-ts";
 import localforage from "localforage";
 
-const groupStateStore = localforage.createInstance({ name: "marmot-groups" });
-const keyPackageStore = localforage.createInstance({ name: "marmot-keys" });
+// Mint a per-device slot once and persist it (e.g. in localStorage). Calling
+// generateKeyPackageSlot() afresh on every page load would defeat the point of
+// an addressable key-package slot — relays replace events under the same
+// (pubkey, kind, d) coordinate, so the d value must be stable for the device.
+const slotStore = window.localStorage;
+let clientId = slotStore.getItem("marmot.clientId");
+if (!clientId) {
+  clientId = generateKeyPackageSlot();
+  slotStore.setItem("marmot.clientId", clientId);
+}
+
+const client = new MarmotClient({
+  signer: yourNostrSigner,
+  // Any GenericKeyValueStore<SerializedClientState>. A LocalForage instance
+  // works directly because it already implements the getItem/setItem/keys API.
+  groupStateStore: localforage.createInstance({ name: "marmot-groups" }),
+  // Any GenericKeyValueStore<StoredKeyPackage> for key package metadata.
+  keyPackageStore: localforage.createInstance({ name: "marmot-keypackages" }),
+  // Your NostrNetworkInterface implementation (publish, request, subscription, getUserInboxRelays).
+  network: yourNetworkInterface,
+  // Stable per-device slot identifier (`d` tag) for addressable (kind 30443) key
+  // packages. MUST be 64 lowercase hex characters per MIP-00; free-form labels
+  // such as "my-app-desktop" are rejected at create()/rotate() time.
+  clientId,
+});
 ```
 
 For tests or short-lived processes, the library ships an in-memory implementation:

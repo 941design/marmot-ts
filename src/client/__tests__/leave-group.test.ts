@@ -22,7 +22,8 @@ async function makeClient(network: MockNetwork): Promise<MarmotClient> {
     keyPackageStore: new InMemoryKeyValueStore(),
     signer: account.signer,
     network,
-    clientId: "test-client",
+    clientId:
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   });
 }
 
@@ -37,7 +38,8 @@ async function setupTwoMemberGroup(mockNetwork: MockNetwork) {
     keyPackageStore: new InMemoryKeyValueStore(),
     signer: adminAccount.signer,
     network: mockNetwork,
-    clientId: "test-admin",
+    clientId:
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   });
 
   const memberClient = new MarmotClient({
@@ -45,7 +47,8 @@ async function setupTwoMemberGroup(mockNetwork: MockNetwork) {
     keyPackageStore: new InMemoryKeyValueStore(),
     signer: memberAccount.signer,
     network: mockNetwork,
-    clientId: "test-member",
+    clientId:
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   });
 
   // Member publishes a key package

@@ -25,7 +25,8 @@ import { defaultCryptoProvider, getCiphersuiteImpl } from "ts-mls";
 // Helpers
 // ---------------------------------------------------------------------------
 
-const TEST_CLIENT_ID = "test-client-desktop";
+const TEST_CLIENT_ID =
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 function makeManager(
   network: MockNetwork,
@@ -82,6 +83,18 @@ describe("KeyPackageManager", () => {
       ).rejects.toThrow(MissingSlotIdentifierError);
     });
 
+    it("leaves the store empty when create() rejects on a non-64-hex identifier", async () => {
+      // Regression guard: createKeyPackageEvent enforces the MIP-00 slot shape.
+      // create() must call it BEFORE any local persistence, otherwise an upgrading
+      // caller passing a free-form clientId would orphan unusable private material
+      // in the local store every time the throw fires.
+      const { manager } = makeManager(network, account, "my-app-desktop");
+      await expect(
+        manager.create({ relays: ["wss://relay.test"] }),
+      ).rejects.toThrow(/generateKeyPackageSlot/);
+      expect(await manager.count()).toBe(0);
+    });
+
     it("uses manager clientId when no d is passed in options", async () => {
       const { manager } = makeManager(network, account, TEST_CLIENT_ID);
       const pkg = await manager.create({ relays: ["wss://relay.test"] });
@@ -91,7 +104,8 @@ describe("KeyPackageManager", () => {
 
     it("uses explicit d option, overriding clientId", async () => {
       const { manager } = makeManager(network, account, TEST_CLIENT_ID);
-      const explicitD = "explicit-slot-id";
+      const explicitD =
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
       const pkg = await manager.create({
         relays: ["wss://relay.test"],
         identifier: explicitD,
@@ -555,7 +569,8 @@ describe("KeyPackageManager", () => {
       const pkg1 = await manager.create({ relays: ["wss://relay.test"] });
       const pkg2 = await manager.create({
         relays: ["wss://relay2.test"],
-        identifier: "second-slot",
+        identifier:
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       });
 
       await manager.purge([pkg1.keyPackageRef, pkg2.keyPackageRef]);
@@ -571,7 +586,8 @@ describe("KeyPackageManager", () => {
       const pkg1 = await manager.create({ relays: ["wss://relay.test"] });
       const pkg2 = await manager.create({
         relays: ["wss://relay2.test"],
-        identifier: "second-slot",
+        identifier:
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       });
 
       await manager.purge([pkg1.keyPackageRef, pkg2.keyPackageRef]);
@@ -743,7 +759,7 @@ describe("KeyPackageManager", () => {
       const { manager: otherManager } = makeManager(
         otherNetwork,
         otherAccount,
-        "other-client",
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       );
       await otherManager.create({ relays: ["wss://relay.test"] });
 
@@ -789,7 +805,7 @@ describe("KeyPackageManager", () => {
       const { manager: otherManager } = makeManager(
         otherNetwork,
         otherAccount,
-        "other-device",
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       );
       await otherManager.create({ relays: ["wss://relay.test"] });
 
@@ -853,7 +869,7 @@ describe("KeyPackageManager", () => {
       const { manager: otherManager } = makeManager(
         otherNetwork,
         otherAccount,
-        "other-device",
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       );
       await otherManager.create({ relays: ["wss://relay.test"] });
 
@@ -896,7 +912,8 @@ describe("KeyPackageManager", () => {
       const pkg = await manager.create({ relays: ["wss://relay.test"] });
       await manager.create({
         relays: ["wss://relay.test"],
-        identifier: "second-slot",
+        identifier:
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       });
 
       await manager.markUsed(pkg.keyPackageRef);
@@ -945,7 +962,8 @@ describe("KeyPackageManager", () => {
       await manager.create({ relays: ["wss://relay.test"] });
       await manager.create({
         relays: ["wss://relay.test"],
-        identifier: "second-slot",
+        identifier:
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       });
 
       expect(await manager.list()).toHaveLength(2);
@@ -992,7 +1010,7 @@ describe("KeyPackageManager", () => {
       const { manager: otherManager } = makeManager(
         otherNetwork,
         otherAccount,
-        "other-device",
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       );
       await otherManager.create({ relays: ["wss://relay.test"] });
       const foreignEvent = otherNetwork.events.find(
@@ -1361,11 +1379,13 @@ describe("KeyPackageManager", () => {
       // stored first.)
       const kpDeprecated = await manager.create({
         relays: ["wss://relay.test"],
-        identifier: "slot-deprecated",
+        identifier:
+          "1111111111111111111111111111111111111111111111111111111111111111",
       });
       const kpActive = await manager.create({
         relays: ["wss://relay.test"],
-        identifier: "slot-active",
+        identifier:
+          "2222222222222222222222222222222222222222222222222222222222222222",
       });
 
       await manager.markDeprecated(
@@ -1420,7 +1440,8 @@ describe("KeyPackageManager", () => {
 
       await manager.create({
         relays: ["wss://relay.test"],
-        identifier: "slot-a",
+        identifier:
+          "3333333333333333333333333333333333333333333333333333333333333333",
       });
 
       const result = await manager.listForWelcomeDecrypt();
@@ -1433,7 +1454,8 @@ describe("KeyPackageManager", () => {
 
       const kp = await manager.create({
         relays: ["wss://relay.test"],
-        identifier: "slot-a",
+        identifier:
+          "3333333333333333333333333333333333333333333333333333333333333333",
       });
       await manager.markDeprecated(
         kp.keyPackageRef,
@@ -1455,7 +1477,8 @@ describe("KeyPackageManager", () => {
 
       const kp = await manager.create({
         relays: ["wss://relay.test"],
-        identifier: "slot-a",
+        identifier:
+          "3333333333333333333333333333333333333333333333333333333333333333",
       });
       await manager.markDeprecated(
         kp.keyPackageRef,
@@ -1480,7 +1503,8 @@ describe("KeyPackageManager", () => {
 
       const kp = await manager.create({
         relays: ["wss://relay.test"],
-        identifier: "slot-a",
+        identifier:
+          "3333333333333333333333333333333333333333333333333333333333333333",
       });
       await manager.markDeprecated(
         kp.keyPackageRef,
@@ -1496,7 +1520,8 @@ describe("KeyPackageManager", () => {
 
       const kp = await manager.create({
         relays: ["wss://relay.test"],
-        identifier: "slot-a",
+        identifier:
+          "3333333333333333333333333333333333333333333333333333333333333333",
       });
       expect(await manager.count()).toBe(1);
 

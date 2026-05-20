@@ -57,10 +57,16 @@ export type MarmotClientOptions<
   /** The nostr relay pool to use for the client. Should implement GroupNostrInterface for group operations. */
   network: NostrNetworkInterface;
   /**
-   * Default `d` tag value (slot identifier) for key package events.
+   * Default `d` tag value (slot identifier) for kind 30443 key package events.
    * Used by {@link KeyPackageManager.create} when no explicit `d` is passed.
-   * Set this to a stable per-device string (e.g. `"my-app-desktop"`) so all
-   * key packages from this client share a single addressable slot on relays.
+   *
+   * MUST be 64 lowercase hex characters per MIP-00. Mint a stable per-device
+   * value once with `generateKeyPackageSlot()` and persist it (e.g. in
+   * localStorage / IndexedDB) so the same addressable slot is reused across
+   * sessions — relays replace events under the same `(pubkey, kind, d)`
+   * coordinate, so rotation collapses to a single live event per slot per
+   * device per pubkey. Free-form labels such as `"my-app-desktop"` are
+   * rejected at create()/rotate() time.
    */
   clientId?: string;
 } & (THistory extends undefined

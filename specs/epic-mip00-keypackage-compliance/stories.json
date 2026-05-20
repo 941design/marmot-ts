@@ -1,0 +1,26 @@
+{
+  "epic_name": "mip00-keypackage-compliance",
+  "story_order": ["S1"],
+  "stories": [
+    {
+      "id": "S1",
+      "name": "mls-proposals-and-slot-compliance",
+      "title": "Add mls_proposals tag emission, 64-hex slot validation, and tighten validator",
+      "status": "pending",
+      "lighter_path": false,
+      "acceptance_criteria": ["AC-EMIT-1","AC-EMIT-2","AC-EMIT-3","AC-SLOT-1","AC-VAL-1","AC-VAL-2","AC-VAL-3","AC-COMPAT-1","AC-ROUND-1","AC-VER-1"],
+      "scope": {
+        "includes": [
+          "src/core/key-package-event.ts",
+          "src/core/__tests__/key-package-event.test.ts",
+          "package.json",
+          "CHANGELOG.md"
+        ],
+        "excludes": [
+          "src/client/key-package-manager.ts"
+        ]
+      },
+      "description": "Single story covering all MIP-00 compliance gaps: emit mls_proposals tag, enforce 64-hex d-tag shape on create, export generateKeyPackageSlot helper, add validator checks for d_tag_shape / mls_proposals_presence / mls_proposals_value (kind-30443 only), add tests, bump version."
+    }
+  ]
+}

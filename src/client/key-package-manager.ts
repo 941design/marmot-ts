@@ -222,8 +222,11 @@ export type CreateKeyPackageOptions = {
   relays: string[];
   /**
    * Addressable slot identifier (`d` tag value) for the kind 30443 event.
-   * If omitted, falls back to the manager's `clientId`. Throws
-   * {@link MissingSlotIdentifierError} if neither is available.
+   * MUST be 64 lowercase hex characters per MIP-00 — use
+   * {@link generateKeyPackageSlot} to mint one. If omitted, falls back to
+   * the manager's `clientId` (which is also subject to the same shape
+   * requirement). Throws {@link MissingSlotIdentifierError} if neither is
+   * available.
    */
   identifier?: string;
   /** Ciphersuite to use (default: MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519) */
@@ -245,9 +248,11 @@ export type RotateKeyPackageOptions = {
   relays?: string[];
   /**
    * Addressable slot identifier (`d` tag value) for the replacement event.
-   * If omitted, the `d` from the stored entry is reused (preferred). If the
-   * stored entry has no `d` (legacy kind 443 package), a fresh random value
-   * is generated.
+   * MUST be 64 lowercase hex characters per MIP-00 — use
+   * {@link generateKeyPackageSlot} to mint one. If omitted, the `d` from the
+   * stored entry is reused (preferred — the relay-replace semantics depend
+   * on it). If the stored entry has no `d` (legacy kind 443 package), a
+   * fresh random 64-hex value is generated automatically.
    */
   d?: string;
   /** Ciphersuite to use for the new key package */
@@ -291,13 +296,41 @@ export type KeyPackageManagerOptions = {
  *
  * Legacy kind-443 events are supported for reading and deletion only; new
  * events are always published as kind 30443.
+ *
+ * @example
+ * ```typescript
+ * const manager = new KeyPackageManager({
+ *   backend: myKeyValueBackend,
+ *   signer,
+ *   network,
+ *   // Stable per-device 64-hex slot (MIP-00). Mint once via
+ *   // generateKeyPackageSlot() and persist; reuse across sessions.
+ *   clientId: generateKeyPackageSlot(),
+ * });
+ * const pkg = await manager.create({ relays: ["wss://relay.example.com"] });
+ *
+ * // Feed observed relay events — kind 443 and kind 30443 with an `i` tag are recorded
+ * await manager.track(nostrEvent);
+ *
+ * // Rotate: publish a new kind 30443 under the same `d` slot (relay replaces automatically)
+ * const newPkg = await manager.rotate(pkg.keyPackageRef);
+ *
+ * // List all key packages, filtering to those with published events
+ * const published = (await manager.list()).filter(p => p.published.length > 0);
+ * ```
  */
 export class KeyPackageManager extends EventEmitter<KeyPackageManagerEvents> {
   /**
    * Default slot identifier (`d` tag value) used by {@link create} when no
-   * explicit `d` is passed in options. Set this to a stable string (e.g.
-   * `"my-app-desktop"`) so all key packages from this manager share a single
-   * addressable slot on relays.
+   * explicit `d` is passed in options.
+   *
+   * MUST be 64 lowercase hex characters per MIP-00 — the manager forwards
+   * this value to {@link createKeyPackageEvent}, which throws on any other
+   * shape (free-form labels such as `"my-app-desktop"` are rejected with a
+   * message pointing at {@link generateKeyPackageSlot}). Mint a stable
+   * per-device value once via `generateKeyPackageSlot()` and persist it so
+   * all key packages from this manager share a single addressable slot on
+   * relays.
    */
   readonly clientId: string | undefined;
 
@@ -550,10 +583,10 @@ export class KeyPackageManager extends EventEmitter<KeyPackageManagerEvents> {
       isLastResort: options.isLastResort,
     });
 
-    // Store private material locally, including the slot identifier
-    const refHex = await this.add({ ...keyPackage, identifier: identifier });
-
-    // Build, sign and publish the kind 30443 event
+    // Build the kind 30443 event template FIRST — createKeyPackageEvent enforces
+    // the MIP-00 64-hex slot shape on `identifier`. Doing this before this.add()
+    // ensures an invalid identifier throws without leaving orphaned private
+    // material in the store.
     const eventTemplate = await createKeyPackageEvent({
       keyPackage: keyPackage.publicPackage,
       identifier: identifier,
@@ -561,6 +594,10 @@ export class KeyPackageManager extends EventEmitter<KeyPackageManagerEvents> {
       client: options.client,
       protected: options.protected,
     });
+
+    // Store private material locally, including the slot identifier
+    const refHex = await this.add({ ...keyPackage, identifier: identifier });
+
     const signed = await this.signer.signEvent(eventTemplate);
     await this.network.publish(options.relays, signed);
 
