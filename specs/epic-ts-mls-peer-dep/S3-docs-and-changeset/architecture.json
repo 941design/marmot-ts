@@ -1,0 +1,5 @@
+{
+  "decision": "direct_edit",
+  "modules_touched": ["README.md", "CONTRIBUTING.md", ".changeset/ts-mls-peer-dependency.md"],
+  "summary": "Add peer dep install instructions to README, add workspace topology + fixture run instructions to CONTRIBUTING, add minor changeset."
+}

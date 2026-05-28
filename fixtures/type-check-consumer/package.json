@@ -1,0 +1,9 @@
+{
+  "name": "@internet-privacy/marmot-ts-type-check-fixture",
+  "private": true,
+  "type": "module",
+  "description": "Downstream type-check smoke test — verifies ts-mls branded types unify across the module graph when marmot-ts is declared as a peer dependency.",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "stories": [
+    {
+      "id": "S1",
+      "name": "package-json-migration",
+      "title": "Move ts-mls from dependencies to peerDependencies + devDependencies",
+      "status": "pending",
+      "story_order": 1,
+      "acceptance_criteria": ["AC-PKG-1", "AC-PKG-2", "AC-PKG-5"],
+      "scope": {
+        "includes": ["package.json", "pnpm-lock.yaml"],
+        "excludes": ["src/**", "dist/**", "fixtures/**", "README.md", "CONTRIBUTING.md"]
+      },
+      "description": "Remove ts-mls from dependencies, add it to peerDependencies (exact version 2.0.0-rc.10) and devDependencies. Run pnpm install to update the lockfile. This is the core fix that allows package managers to deduplicate ts-mls across the consumer's module graph.",
+      "lighter_path": false
+    },
+    {
+      "id": "S2",
+      "name": "ci-type-check-fixture",
+      "title": "Create downstream type-check fixture and CI job",
+      "status": "pending",
+      "story_order": 2,
+      "acceptance_criteria": ["AC-PKG-2", "AC-PKG-3"],
+      "scope": {
+        "includes": [
+          "fixtures/type-check-consumer/package.json",
+          "fixtures/type-check-consumer/tsconfig.json",
+          "fixtures/type-check-consumer/src/smoke.ts",
+          "pnpm-workspace.yaml",
+          "pnpm-lock.yaml",
+          ".github/workflows/tests.yml"
+        ],
+        "excludes": ["src/**", "package.json", "README.md", "CONTRIBUTING.md"]
+      },
+      "description": "Create a minimal consumer fixture at fixtures/type-check-consumer/ that imports getOwnLeafNode from ts-mls and passes group.state (MarmotGroup.state: ClientState) to it. Add to pnpm workspace. Add a CI job that builds marmot-ts then runs tsc --noEmit in the fixture, catching any future regression where a branded ts-mls type re-enters as a non-peer dep.",
+      "lighter_path": false
+    },
+    {
+      "id": "S3",
+      "name": "docs-and-changeset",
+      "title": "Document peer dependency and add changeset",
+      "status": "pending",
+      "story_order": 3,
+      "acceptance_criteria": ["AC-PKG-4", "AC-PKG-6"],
+      "scope": {
+        "includes": ["README.md", "CONTRIBUTING.md", ".changeset/*.md"],
+        "excludes": ["src/**", "package.json", "fixtures/**"]
+      },
+      "description": "Update README.md installation section to show ts-mls as a required peer dep. Update CONTRIBUTING.md to document the workspace co-development topology. Add a minor changeset describing the peer dep change.",
+      "lighter_path": false
+    }
+  ],
+  "story_order": ["S1", "S2", "S3"]
+}

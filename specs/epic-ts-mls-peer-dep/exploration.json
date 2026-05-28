@@ -1,0 +1,26 @@
+{
+  "created_at": "2026-05-28T22:55:00Z",
+  "similar_features": {
+    "notes": "No prior peer dependency migrations found in this repo. The pattern is standard for TypeScript libraries that expose branded third-party types in their public API.",
+    "relevant_files": [
+      "package.json",
+      "pnpm-workspace.yaml",
+      ".github/workflows/tests.yml"
+    ]
+  },
+  "architecture": {
+    "notes": "Package is an ESM TypeScript library. ts-mls is imported throughout src/core/ and re-exported via src/mls.ts. The public API surface (MarmotGroup.state: ClientState, MarmotGroup.propose()) exposes ts-mls branded types. Moving ts-mls to peerDependencies is purely a package metadata change — no source code changes needed.",
+    "ts_mls_public_surface": [
+      "MarmotGroup.state: ClientState (src/client/group/marmot-group.ts:360)",
+      "MarmotGroup.propose(): ProposalAction<T> parameter (src/client/group/marmot-group.ts:578)",
+      "getPubkeyLeafNodeIndexes(state: ClientState) re-exported via src/core/group-members.ts",
+      "src/mls.ts: export * from 'ts-mls' (./mls subpath re-export)"
+    ]
+  },
+  "testing_and_conventions": {
+    "notes": "Tests run via Vitest on Node 20/22/24, Deno 2, and Bun. No existing type-check fixture. CI uses pnpm 10 with --frozen-lockfile. No e2e infrastructure.",
+    "test_runner": "vitest",
+    "ci_workflow": ".github/workflows/tests.yml",
+    "fixture_pattern": "none existing — to be created at fixtures/type-check-consumer/"
+  }
+}

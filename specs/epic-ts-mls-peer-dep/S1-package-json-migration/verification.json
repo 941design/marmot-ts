@@ -1,0 +1,54 @@
+{
+  "story_id": "S1",
+  "pre_impl_questions": [
+    {
+      "id": "Q-S1-1",
+      "phase": "pre_impl",
+      "question": "Does package.json currently list ts-mls under 'dependencies'?",
+      "expected": "YES — ts-mls@2.0.0-rc.10 is in dependencies"
+    },
+    {
+      "id": "Q-S1-2",
+      "phase": "pre_impl",
+      "question": "Is there currently a peerDependencies section in package.json?",
+      "expected": "NO — no peerDependencies field exists yet"
+    },
+    {
+      "id": "Q-S1-3",
+      "phase": "pre_impl",
+      "question": "Is ts-mls currently in devDependencies?",
+      "expected": "NO — ts-mls is only in dependencies"
+    },
+    {
+      "id": "Q-S1-4",
+      "phase": "pre_impl",
+      "question": "Does pnpm-lock.yaml reflect the current dependencies state?",
+      "expected": "YES — lockfile is up to date with current package.json"
+    },
+    {
+      "id": "Q-S1-5",
+      "phase": "pre_impl",
+      "question": "Will removing ts-mls from dependencies break any import in src/?",
+      "expected": "NO — devDependencies is sufficient for build/test; peers handle runtime resolution"
+    },
+    {
+      "id": "SPEC-AC-PKG-1",
+      "phase": "pre_impl",
+      "question": "AC-PKG-1: After the change, does package.json list ts-mls under peerDependencies and devDependencies, and NOT under dependencies?",
+      "expected": "YES — exactly this classification"
+    },
+    {
+      "id": "SPEC-AC-PKG-2",
+      "phase": "pre_impl",
+      "question": "AC-PKG-2: After the change, will pnpm deduplicate ts-mls to a single copy in a consumer that also declares ts-mls?",
+      "expected": "YES — peerDependencies causes pnpm to satisfy ts-mls from the consumer's scope"
+    },
+    {
+      "id": "SPEC-AC-PKG-5",
+      "phase": "pre_impl",
+      "question": "AC-PKG-5: Will a version-mismatched ts-mls consumer get a peer dep warning rather than a silent second copy?",
+      "expected": "YES — automatic with peerDependencies declaration"
+    }
+  ],
+  "post_impl_answers": []
+}

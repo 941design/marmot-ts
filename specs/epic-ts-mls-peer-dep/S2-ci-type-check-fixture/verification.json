@@ -1,0 +1,48 @@
+{
+  "story_id": "S2",
+  "pre_impl_questions": [
+    {
+      "id": "Q-S2-1",
+      "phase": "pre_impl",
+      "question": "Does a fixtures/ directory or type-check fixture exist in the project?",
+      "expected": "NO — no fixture dirs exist"
+    },
+    {
+      "id": "Q-S2-2",
+      "phase": "pre_impl",
+      "question": "Does pnpm-workspace.yaml currently list any packages other than '.'?",
+      "expected": "NO — workspace only contains the root package"
+    },
+    {
+      "id": "Q-S2-3",
+      "phase": "pre_impl",
+      "question": "Does the CI workflow (.github/workflows/tests.yml) currently have a type-check fixture step?",
+      "expected": "NO — only runs vitest on Node/Deno/Bun"
+    },
+    {
+      "id": "Q-S2-4",
+      "phase": "pre_impl",
+      "question": "Is MarmotGroup.state typed as ClientState from ts-mls?",
+      "expected": "YES — src/client/group/marmot-group.ts line 360 returns this.#state: ClientState"
+    },
+    {
+      "id": "Q-S2-5",
+      "phase": "pre_impl",
+      "question": "Is getOwnLeafNode exported from ts-mls and does it accept ClientState as its parameter?",
+      "expected": "YES — per spec §2 evidence; this is the exact function that fails today with TS2345"
+    },
+    {
+      "id": "SPEC-AC-PKG-3",
+      "phase": "pre_impl",
+      "question": "AC-PKG-3: After implementation, does the fixture compile with tsc --noEmit and zero TS2345 errors?",
+      "expected": "YES — once ts-mls is a peer dep, both ts-mls instances resolve to the same copy"
+    },
+    {
+      "id": "SPEC-AC-PKG-2-fixture",
+      "phase": "pre_impl",
+      "question": "AC-PKG-2 (fixture): Does the fixture CI job verify single-instance ts-mls after install?",
+      "expected": "YES — pnpm why ts-mls in the fixture shows a single resolved copy"
+    }
+  ],
+  "post_impl_answers": []
+}

@@ -1,0 +1,5 @@
+{
+  "decision": "direct_edit",
+  "modules_touched": ["package.json"],
+  "summary": "Remove ts-mls from dependencies, add to peerDependencies and devDependencies. Run pnpm install to update lockfile."
+}

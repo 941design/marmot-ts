@@ -134,3 +134,65 @@ jobs:
 
       - name: Run tests with Bun
         run: bun run vitest run
+
+  type-check-consumer:
+    name: Type-check downstream consumer fixture
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build marmot-ts
+        run: pnpm build
+
+      - name: Pack marmot-ts
+        run: pnpm pack --pack-destination fixtures/type-check-consumer
+
+      - name: Install fixture dependencies
+        working-directory: fixtures/type-check-consumer
+        run: |
+          TARBALL=$(ls *.tgz | head -1)
+          pnpm add "file:./${TARBALL}" "ts-mls@2.0.0-rc.10" "typescript@~6.0.3"
+
+      - name: Verify single ts-mls instance
+        working-directory: fixtures/type-check-consumer
+        run: |
+          RESULT=$(pnpm why ts-mls 2>/dev/null)
+          echo "$RESULT"
+          if echo "$RESULT" | grep -qE "[2-9] instances"; then
+            echo "ERROR: multiple ts-mls instances found — ts-mls must be a peer dependency, not a regular dependency"
+            exit 1
+          fi
+          echo "OK: single ts-mls instance verified"
+
+      - name: Type-check fixture
+        working-directory: fixtures/type-check-consumer
+        run: pnpm run typecheck

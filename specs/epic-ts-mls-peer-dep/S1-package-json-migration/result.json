@@ -1,0 +1,12 @@
+{
+  "story_id": "S1",
+  "status": "done",
+  "final_outcome": "accepted",
+  "files_modified": ["package.json", "pnpm-lock.yaml"],
+  "remediation_rounds": 0,
+  "completed_at": "2026-05-28T23:05:00Z",
+  "retrospective": {
+    "skipped": true,
+    "reason": "lighter-path; no architect retro"
+  }
+}

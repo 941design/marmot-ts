@@ -27,11 +27,36 @@ TypeScript implementation of the [Marmot protocol](https://github.com/marmot-pro
 
 ## Installation
 
+`ts-mls` is a **peer dependency** — you must install it alongside `marmot-ts`. This ensures there is exactly one copy of `ts-mls` in your module graph, which is required because `ts-mls` uses nominal (branded) types. Two copies would make its types structurally incompatible.
+
 ```bash
-npm install @internet-privacy/marmot-ts
+npm install @internet-privacy/marmot-ts ts-mls@2.0.0-rc.10
 # or
-pnpm add @internet-privacy/marmot-ts
+pnpm add @internet-privacy/marmot-ts ts-mls@2.0.0-rc.10
 ```
+
+### Co-development topology (workspace)
+
+If you are developing against an unreleased or locally-modified `marmot-ts`, use a **pnpm workspace** that contains both packages. This ensures pnpm satisfies `marmot-ts`'s `ts-mls` peer dependency from the workspace root, keeping a single shared instance:
+
+```yaml
+# pnpm-workspace.yaml at your repo root
+packages:
+  - packages/marmot-ts   # your marmot-ts fork/checkout
+  - packages/your-app    # your consumer
+```
+
+```jsonc
+// packages/your-app/package.json
+{
+  "dependencies": {
+    "@internet-privacy/marmot-ts": "workspace:*",
+    "ts-mls": "2.0.0-rc.10"
+  }
+}
+```
+
+A `file:`-link to a dev tree **without** a workspace (e.g. `"@internet-privacy/marmot-ts": "file:../marmot-ts"`) does not reliably deduplicate `ts-mls` — the dev tree's own `node_modules/ts-mls` (from its `devDependencies`) is found via realpath and creates a second instance, causing TypeScript `TS2345` brand-mismatch errors at build time. Use a workspace instead.
 
 ## Concepts
 

@@ -1,0 +1,11 @@
+{
+  "decision": "direct_edit",
+  "modules_touched": [
+    "fixtures/type-check-consumer/package.json",
+    "fixtures/type-check-consumer/tsconfig.json",
+    "fixtures/type-check-consumer/src/smoke.ts",
+    "fixtures/type-check-consumer/.gitignore",
+    ".github/workflows/tests.yml"
+  ],
+  "summary": "Create standalone fixture package (not in workspace) that installs marmot-ts from a packed tarball + ts-mls to verify single-instance behavior. Add CI job that builds, packs, installs, and type-checks."
+}

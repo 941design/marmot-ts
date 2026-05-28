@@ -1,0 +1,19 @@
+{
+  "story_id": "S2",
+  "status": "done",
+  "final_outcome": "accepted",
+  "files_modified": [
+    "fixtures/type-check-consumer/package.json",
+    "fixtures/type-check-consumer/tsconfig.json",
+    "fixtures/type-check-consumer/src/smoke.ts",
+    "fixtures/type-check-consumer/.gitignore",
+    ".github/workflows/tests.yml"
+  ],
+  "remediation_rounds": 0,
+  "completed_at": "2026-05-28T23:10:00Z",
+  "notes": "Workspace approach failed (2 ts-mls instances due to @noble/ciphers peer resolution difference). Pack+tarball approach used instead — no devDeps in tarball means exactly one ts-mls. Verified locally: pnpm why ts-mls shows 1 version, tsc --noEmit passes with zero errors.",
+  "retrospective": {
+    "skipped": false,
+    "finding": "pnpm creates separate virtual packages for the same ts-mls version when its transitive peer deps (@noble/ciphers) resolve differently across contexts. Using workspace:* with devDeps present in the source tree causes this. The pack+tarball approach sidesteps it because devDeps are excluded from tarballs."
+  }
+}

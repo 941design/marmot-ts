@@ -1,0 +1,32 @@
+{
+  "epic_name": "ts-mls-peer-dep",
+  "status": "done",
+  "phase": "COMPLETE",
+  "created_at": "2026-05-28T22:55:00Z",
+  "updated_at": "2026-05-28T23:12:00Z",
+  "pre_existing_dirty_files": [
+    ".claude/settings.local.json",
+    ".claude/verification-results.csv",
+    ".clauded.yaml",
+    "marmot-ts-mip00-keypackage-compliance.md",
+    "specs/marmot-ts-mip00-keypackage-compliance.md",
+    "specs/marmot-ts-rumor-sender-authentication.md",
+    "specs/marmot-ts-shared-ts-mls-feature-request.md",
+    "specs/marmot-ts-welcome-grace-window-2.md",
+    "specs/marmot-ts-welcome-grace-window.md"
+  ],
+  "completed_stories": ["S1", "S2", "S3"],
+  "escalated_stories": [],
+  "phase_history": [
+    {"phase": "SPEC_VALIDATED", "timestamp": "2026-05-28T22:55:00Z", "trigger": "validation_passed"},
+    {"phase": "IMPLEMENTING", "timestamp": "2026-05-28T22:55:00Z", "trigger": "stories_planned"},
+    {"phase": "COMPLETE", "timestamp": "2026-05-28T23:12:00Z", "trigger": "all_stories_done"}
+  ],
+  "plugin_sha": "f5e4524c7b9618d99914da272f8e8e9745ed9057",
+  "consumer_sha": "644d0500e908360115b4efb1872c3b7c1b26d2f4",
+  "models": {
+    "lead": "sonnet",
+    "examiner": "unknown",
+    "implementer": "unknown"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "story_id": "S3",
+  "pre_impl_questions": [
+    {
+      "id": "Q-S3-1",
+      "phase": "pre_impl",
+      "question": "Does README.md currently mention ts-mls as a peer or required dependency in the installation section?",
+      "expected": "NO — installation shows only marmot-ts; ts-mls peer dep is not mentioned"
+    },
+    {
+      "id": "Q-S3-2",
+      "phase": "pre_impl",
+      "question": "Does CONTRIBUTING.md describe a pnpm workspace co-development topology?",
+      "expected": "NO — CONTRIBUTING.md uses npm, not pnpm, and has no workspace topology section"
+    },
+    {
+      "id": "Q-S3-3",
+      "phase": "pre_impl",
+      "question": "Does a changeset for the ts-mls peer dep change already exist in .changeset/?",
+      "expected": "NO — no changeset exists yet for this change"
+    },
+    {
+      "id": "Q-S3-4",
+      "phase": "pre_impl",
+      "question": "Is the ts-mls peer dep change a consumer-visible API/contract change?",
+      "expected": "YES — consumers who did not declare ts-mls directly will need to add it; this is at least a minor version change"
+    },
+    {
+      "id": "SPEC-AC-PKG-4",
+      "phase": "pre_impl",
+      "question": "AC-PKG-4: After implementation, does the documentation describe the workspace co-dev topology?",
+      "expected": "YES — CONTRIBUTING.md should explain pnpm workspace setup for co-developing with marmot-ts"
+    },
+    {
+      "id": "SPEC-AC-PKG-6",
+      "phase": "pre_impl",
+      "question": "AC-PKG-6: After implementation, do the docs state (a) ts-mls is peer dep, (b) why (branded types), and (c) recommended topologies?",
+      "expected": "YES — README installation section + CONTRIBUTING co-dev section should cover all three points"
+    }
+  ],
+  "post_impl_answers": []
+}

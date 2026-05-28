@@ -96,7 +96,9 @@
     "applesauce-common": "^5.2.0",
     "applesauce-core": "^5.2.0",
     "debug": "^4.4.3",
-    "eventemitter3": "^5.0.4",
+    "eventemitter3": "^5.0.4"
+  },
+  "peerDependencies": {
     "ts-mls": "2.0.0-rc.10"
   },
   "lint-staged": {
@@ -111,6 +113,7 @@
     "lint-staged": "^17.0.5",
     "prettier": "^3.8.3",
     "rimraf": "~6.0.1",
+    "ts-mls": "2.0.0-rc.10",
     "typedoc": "^0.28.19",
     "typescript": "~6.0.3",
     "vitepress": "2.0.0-alpha.17",
