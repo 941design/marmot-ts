@@ -136,6 +136,7 @@ import {
   calculateKeyPackageRef,
   createCredential,
   createKeyPackageEvent,
+  generateKeyPackageSlot,
 } from "@internet-privacy/marmot-ts";
 import { ciphersuites, defaultCryptoProvider } from "ts-mls";
 
@@ -156,10 +157,13 @@ const ref = await calculateKeyPackageRef(kp.publicPackage);
 // 3. Store private package securely
 await client.keyPackages.add(kp);
 
-// 4. Publish public package to Nostr
+// 4. Publish public package to Nostr.
+//    The `identifier` is the kind 30443 `d` tag and MUST be 64 lowercase hex
+//    characters per MIP-00. Mint a stable per-device slot once with
+//    generateKeyPackageSlot() and persist it; free-form labels are rejected.
 const event = await createKeyPackageEvent({
   keyPackage: kp.publicPackage,
-  identifier: "my-app-desktop",
+  identifier: generateKeyPackageSlot(),
   relays: myRelays,
 });
 const signed = await signer.signEvent(event);

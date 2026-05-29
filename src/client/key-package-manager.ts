@@ -300,7 +300,7 @@ export type KeyPackageManagerOptions = {
  * @example
  * ```typescript
  * const manager = new KeyPackageManager({
- *   backend: myKeyValueBackend,
+ *   store: myKeyValueStore,
  *   signer,
  *   network,
  *   // Stable per-device 64-hex slot (MIP-00). Mint once via

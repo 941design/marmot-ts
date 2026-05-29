@@ -113,14 +113,29 @@ const network = {
 ## Initialize the Client
 
 ```typescript
-import { MarmotClient } from "@internet-privacy/marmot-ts";
+import {
+  MarmotClient,
+  generateKeyPackageSlot,
+} from "@internet-privacy/marmot-ts";
+
+// Mint a per-device slot once and persist it (e.g. in localStorage). Relays
+// replace key-package events under the same (pubkey, kind, d) coordinate, so
+// the d value must be stable for the device — generating a fresh slot on every
+// startup would defeat the point of an addressable slot.
+let clientId = localStorage.getItem("marmot.clientId");
+if (!clientId) {
+  clientId = generateKeyPackageSlot();
+  localStorage.setItem("marmot.clientId", clientId);
+}
 
 const client = new MarmotClient({
   signer: yourNostrSigner, // EventSigner from applesauce-core or similar
   network,
   groupStateStore,
   keyPackageStore,
-  clientId: "my-chat-app-desktop", // default key package slot identifier
+  // Default key package slot (`d` tag). MUST be 64 lowercase hex characters per
+  // MIP-00; free-form labels are rejected at create()/rotate() time.
+  clientId,
 });
 
 const myPubkey = await client.signer.getPublicKey();
@@ -139,7 +154,9 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 
 const keyPackage = await client.keyPackages.create({
   relays: ["wss://relay.example.com"],
-  identifier: "my-chat-app-desktop", // kind 30443 `d` tag; optional if clientId is set
+  // kind 30443 `d` tag; optional if clientId is set on the client. Must be a
+  // 64-lowercase-hex slot from generateKeyPackageSlot() — omit it here to reuse
+  // the persisted clientId minted above.
   client: "my-chat-app",
 });
 

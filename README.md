@@ -86,7 +86,10 @@ Any backend that matches this shape works. [LocalForage](https://github.com/loca
 To begin using the client, you need an `EventSigner` (e.g. from `applesauce-core`), a `NostrNetworkInterface` implementation, and two `GenericKeyValueStore` backends — one for serialized group state bytes and one for key package metadata.
 
 ```typescript
-import { MarmotClient, generateKeyPackageSlot } from "@internet-privacy/marmot-ts";
+import {
+  MarmotClient,
+  generateKeyPackageSlot,
+} from "@internet-privacy/marmot-ts";
 import localforage from "localforage";
 
 // Mint a per-device slot once and persist it (e.g. in localStorage). Calling
@@ -137,7 +140,9 @@ const client = new MarmotClient({
   network, // your NostrNetworkInterface implementation
   groupStateStore, // GenericKeyValueStore<SerializedClientState>
   keyPackageStore, // GenericKeyValueStore<StoredKeyPackage>
-  clientId: "my-app-desktop", // stable d-tag for kind 30443 key packages
+  // Stable 64-hex d-tag for kind 30443 key packages. Mint once with
+  // generateKeyPackageSlot() and persist; free-form labels are rejected.
+  clientId,
 });
 ```
 

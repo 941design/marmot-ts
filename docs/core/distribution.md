@@ -7,11 +7,16 @@ Key packages are published as Nostr events so others can add you to groups.
 ### Creating Key Package Events
 
 ```typescript
-import { createKeyPackageEvent } from "@internet-privacy/marmot-ts";
+import {
+  createKeyPackageEvent,
+  generateKeyPackageSlot,
+} from "@internet-privacy/marmot-ts";
 
 const event = await createKeyPackageEvent({
   keyPackage: keyPackage.publicPackage,
-  identifier: "my-app-desktop",
+  // kind 30443 `d` tag. MUST be 64 lowercase hex characters per MIP-00; mint a
+  // stable per-device slot once via generateKeyPackageSlot() and persist it.
+  identifier: generateKeyPackageSlot(),
   relays: ["wss://relay1.com", "wss://relay2.com"],
   client: "my-app-v1.0", // Optional client identifier
 });
@@ -27,14 +32,20 @@ await network.publish(["wss://relay1.com", "wss://relay2.com"], signed);
 kind: 30443
 content: base64-encoded KeyPackage
 tags:
-  - ["d", "my-app-desktop"]
+  - ["d", "<64 lowercase hex characters>"]   # MIP-00 addressable slot
   - ["mls_protocol_version", "1.0"]
   - ["mls_ciphersuite", "0x0001"]
   - ["mls_extensions", "0xf2ee", "0x000a"]
-  - ["relays", ...urls]
-  - ["client", "client-name"] (optional)
   - ["encoding", "base64"]
+  - ["mls_proposals", "0x000a"]               # MIP-00 required (self_remove)
+  - ["i", "<KeyPackageRef hex>"]              # MIP-00 required
+  - ["client", "client-name"]                 # optional
+  - ["relays", ...urls]                       # optional
 ```
+
+> The `d` tag must be exactly 64 lowercase hex characters and the
+> `["mls_proposals", "0x000a"]` tag must be present, or MIP-00 validators
+> (e.g. MDK-based clients) will reject the event.
 
 ### Extracting Key Packages
 
