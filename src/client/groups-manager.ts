@@ -27,6 +27,10 @@ import {
   MarmotGroup,
 } from "./group/marmot-group.js";
 import type {
+  EpochSnapshotStoreBackend,
+  EpochSnapshotStoreFactory,
+} from "./group/epoch-snapshot.js";
+import type {
   NostrNetworkInterface,
   PublishResponse,
 } from "./nostr-interface.js";
@@ -50,6 +54,12 @@ export type GroupsManagerOptions<
   historyFactory?: GroupHistoryFactory<THistory>;
   /** Optional group media factory passed to each MarmotGroup instance */
   mediaFactory?: GroupMediaFactory<TMedia>;
+  /** Optional epoch snapshot store backend or factory passed to each MarmotGroup instance */
+  snapshotsBackend?: EpochSnapshotStoreBackend | EpochSnapshotStoreFactory;
+  /** Number of past epochs to retain in the snapshot store (defaults to 2) */
+  snapshotDepth?: number;
+  /** Size of the past-epoch decryption window passed to each MarmotGroup (defaults to 5) */
+  pastEpochDepth?: number;
 };
 
 /** Events emitted by {@link GroupsManager} */
@@ -99,6 +109,18 @@ export class GroupsManager<
   /** Group media factory passed to group instances */
   private mediaFactory: GroupMediaFactory<TMedia>;
 
+  /** Epoch snapshot store backend or factory passed to group instances */
+  private snapshotsBackend:
+    | EpochSnapshotStoreBackend
+    | EpochSnapshotStoreFactory
+    | undefined;
+
+  /** Number of past epochs to retain in the snapshot store */
+  private snapshotDepth: number | undefined;
+
+  /** Size of the past-epoch decryption window passed to group instances */
+  private pastEpochDepth: number | undefined;
+
   /** In-memory cache of loaded group instances, keyed by hex group id */
   #groups = new Map<string, MarmotGroup<THistory, TMedia>>();
 
@@ -125,6 +147,9 @@ export class GroupsManager<
     this.historyFactory =
       options.historyFactory as GroupHistoryFactory<THistory>;
     this.mediaFactory = options.mediaFactory as GroupMediaFactory<TMedia>;
+    this.snapshotsBackend = options.snapshotsBackend;
+    this.snapshotDepth = options.snapshotDepth;
+    this.pastEpochDepth = options.pastEpochDepth;
   }
 
   /** Returns the list of currently loaded group instances */
@@ -215,6 +240,9 @@ export class GroupsManager<
       network: this.network,
       history: this.historyFactory,
       media: this.mediaFactory,
+      snapshots: this.snapshotsBackend,
+      snapshotDepth: this.snapshotDepth,
+      pastEpochDepth: this.pastEpochDepth,
     });
   }
 
@@ -285,6 +313,9 @@ export class GroupsManager<
       network: this.network,
       history: this.historyFactory,
       media: this.mediaFactory,
+      snapshots: this.snapshotsBackend,
+      snapshotDepth: this.snapshotDepth,
+      pastEpochDepth: this.pastEpochDepth,
     });
 
     // Persist initial state via the group's own save() path.
@@ -396,6 +427,9 @@ export class GroupsManager<
       network: this.network,
       history: this.historyFactory,
       media: this.mediaFactory,
+      snapshots: this.snapshotsBackend,
+      snapshotDepth: this.snapshotDepth,
+      pastEpochDepth: this.pastEpochDepth,
     });
     await group.save(true);
 

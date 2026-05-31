@@ -1,0 +1,7 @@
+{
+  "captured_at": "2026-05-31T00:00:00.000Z",
+  "test_files": 26,
+  "tests": 434,
+  "lint": "3 pre-existing prettier warnings",
+  "typecheck": "clean"
+}

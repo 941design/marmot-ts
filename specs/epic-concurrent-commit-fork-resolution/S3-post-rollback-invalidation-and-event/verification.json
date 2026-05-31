@@ -1,0 +1,90 @@
+{
+  "story_id": "S3",
+  "authored_by": "story-planner",
+  "authored_at": "2026-05-31T00:00:00.000Z",
+  "questions": [
+    {
+      "question_id": "VQ-S3-001",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-STRUCT-4",
+      "question": "Does `MarmotGroupEvents` in `src/client/group/marmot-group.ts` include `rollback: (info: RollbackInfo) => void` as a typed entry alongside existing events? Does `group.on('rollback', handler)` compile without TypeScript error? Show (a) the updated `MarmotGroupEvents` type, (b) a `tsc --noEmit` invocation or `pnpm build` output confirming zero errors."
+    },
+    {
+      "question_id": "VQ-S3-002",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-MSG-1",
+      "question": "After a rollback, does `ingest()` yield invalidation records for application messages that were decrypted under the losing epoch, and does each record carry the event id of the message? Does an integration test in `src/__tests__/integration/ingest-commit-race.test.ts` assert that the event ids in `RollbackInfo.invalidatedMessages` exactly match the set of messages that were decrypted prior to rollback? Show the test's assertion block."
+    },
+    {
+      "question_id": "VQ-S3-003",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-MSG-2",
+      "question": "After a rollback restores the epoch-N snapshot and re-applies the winner, are events previously in the \"unreadable\" set that were encrypted under the winner's epoch keys re-attempted, and do they succeed — appearing in the final `ingest()` result as successfully decrypted rather than unreadable? Show the integration test assertion that confirms previously-unreadable events are now in the decrypted set."
+    },
+    {
+      "question_id": "VQ-S3-004",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-EVT-1",
+      "question": "When a rollback occurs, does `MarmotGroup` emit exactly one `rollback` event with a `RollbackInfo` payload where `targetEpoch` equals the epoch of the snapshot restored (the epoch before the losing commit was applied) and `newHeadCommitEventId` equals the winning commit's Nostr event id? Does the integration test register a spy on `group.on('rollback', ...)` and assert exactly one emission with these values? Show the spy setup and assertion."
+    },
+    {
+      "question_id": "VQ-S3-005",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-EVT-2",
+      "question": "When only one commit exists for an epoch (no race condition), does `ingest()` emit zero `rollback` events? Does a test verify the spy count is zero after normal single-committer ingest? Show the no-event assertion."
+    },
+    {
+      "question_id": "VQ-S3-006",
+      "phase": "pre-impl",
+      "category": "QUALITY",
+      "question": "Does the per-ingest message-tracking bookkeeping (the structure that records which messages were decrypted under the in-progress epoch) leave no state leak between `ingest()` calls — i.e. is the per-call record cleared at the start or end of each invocation, so a subsequent non-rollback ingest does not inherit the prior call's epoch-message list? Confirm by reading the `ingest()` code around the bookkeeping initialization."
+    },
+    {
+      "question_id": "VQ-S3-007",
+      "phase": "pre-impl",
+      "category": "ARCHITECTURE",
+      "question": "Does S3's implementation of message tracking and event emission remain confined to `src/client/group/marmot-group.ts` with no changes to `src/core/group-message.ts`, `epoch-snapshot.ts`, or any file in `src/extra/`? List every file modified by S3 and confirm each is within the S3 scope boundary from `stories.json`."
+    },
+    {
+      "question_id": "VQ-S3-008",
+      "phase": "pre-impl",
+      "category": "ARCHITECTURE",
+      "question": "Could the rollback event emission and invalidation bookkeeping in `marmot-group.ts` be deleted and rewritten without modifying any file outside `marmot-group.ts` and the integration test file? If not, which dependencies exist, and do they flow through the `RollbackInfo` seam contract declared in `stories.json`?"
+    },
+    {
+      "question_id": "VQ-S3-009",
+      "phase": "pre-impl",
+      "category": "TEST",
+      "question": "Is the rollback event emission tested with a real EventEmitter-style `group.on('rollback', spy)` call (not just checking the return value of `ingest()`), so the test confirms both that the event fires and that its payload has the correct shape? Does the test also confirm that `group.on('rollback', ...)` compiles — i.e. TypeScript accepts the string literal `'rollback'` as a valid event name for this group instance?"
+    },
+    {
+      "question_id": "VQ-S3-010",
+      "phase": "pre-impl",
+      "category": "BEST_PRACTICES",
+      "question": "Does the library's `rollback` event emission follow the existing event-emission pattern for other `MarmotGroupEvents` entries (same emitter call style, same error-handling discipline) so consumers can subscribe without observing any behavioral difference from other event types? Confirm by comparing the rollback emission code with an existing event emission in `marmot-group.ts`."
+    },
+    {
+      "question_id": "VQ-S3-PI-001",
+      "phase": "post-impl",
+      "category": "QUALITY",
+      "question": "The `#messagesByEpoch` map is a permanent instance field (not cleared per `ingest()` call). Does it grow unboundedly if the caller issues many non-rollback ingest calls with application messages across many epochs? The rollback cleanup path deletes epochs strictly above `targetEpoch`, but epochs below or equal to `targetEpoch` are never pruned. Is this bounded by the number of epochs the local member has been in the group, and is that acceptable for the expected group lifetime?"
+    },
+    {
+      "question_id": "VQ-S3-PI-002",
+      "phase": "post-impl",
+      "category": "QUALITY",
+      "question": "The test for AC-EVT-1 / AC-MSG-1 wraps the winner's MLS bytes with the LOSER's epoch-2 exporter secret so the member (at epoch 2) can NIP-44-decrypt the outer envelope. Is this a valid simulation of the production MIP-03 rollback path, or does the real S4 past-epoch decryption window behave differently in a way that would cause the rollback path to never fire in production with winner-epoch-1 commits delivered after the member has advanced to epoch 2?"
+    },
+    {
+      "question_id": "VQ-S3-PI-003",
+      "phase": "post-impl",
+      "category": "QUALITY",
+      "question": "Codex review returned no structured findings (command execution was unavailable in the review environment). Ollama review was skipped (lead-authorized: OLLAMA_REVIEW_MODEL not set). Was a manual walkthrough of the S3 additions in `marmot-group.ts` (lines ~411, ~1452-1456, ~1502-1507, ~1569-1696) sufficient to satisfy the mandatory review gate, given the Codex backend limitation?"
+    }
+  ]
+}

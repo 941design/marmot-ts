@@ -9,3 +9,5 @@ models
 mcp.json
 plans
 .vitepress/cache
+reports/mutation
+.stryker-tmp

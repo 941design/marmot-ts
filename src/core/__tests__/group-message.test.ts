@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { sha256 } from "@noble/hashes/sha2.js";
 import {
   createApplicationMessage,
   defaultCryptoProvider,
@@ -11,6 +12,8 @@ import {
 import {
   createEncryptedGroupEventContent,
   decryptGroupMessageEvent,
+  isBetterCandidate,
+  isReplayOfApplied,
 } from "../group-message.js";
 import { createLegacyEncryptedGroupEventContent } from "../group-message-legacy.js";
 import { createCredential } from "../credential.js";
@@ -217,5 +220,76 @@ describe("group message encryption (MIP-03)", () => {
     await expect(
       decryptGroupMessageEvent(event, clientState, ciphersuite),
     ).rejects.toThrow("Failed to decrypt group message");
+  });
+});
+
+// ============================================================================
+// AC-ROLL-2: isBetterCandidate unit tests (all four cases)
+// ============================================================================
+describe("isBetterCandidate (MIP-03 comparator)", () => {
+  it("returns true when candidate has earlier created_at", () => {
+    const candidate = { id: "b".repeat(64), created_at: 1 };
+    const applied = { eventId: "a".repeat(64), createdAt: 2 };
+    expect(isBetterCandidate(candidate, applied)).toBe(true);
+  });
+
+  it("returns false when candidate has later created_at", () => {
+    const candidate = { id: "a".repeat(64), created_at: 2 };
+    const applied = { eventId: "b".repeat(64), createdAt: 1 };
+    expect(isBetterCandidate(candidate, applied)).toBe(false);
+  });
+
+  it("returns true on created_at tie when candidate id is lexicographically smaller", () => {
+    const candidate = { id: "a".repeat(64), created_at: 1 };
+    const applied = { eventId: "b".repeat(64), createdAt: 1 };
+    expect(isBetterCandidate(candidate, applied)).toBe(true);
+  });
+
+  it("returns false on created_at tie when candidate id is lexicographically larger", () => {
+    const candidate = { id: "b".repeat(64), created_at: 1 };
+    const applied = { eventId: "a".repeat(64), createdAt: 1 };
+    expect(isBetterCandidate(candidate, applied)).toBe(false);
+  });
+});
+
+// ============================================================================
+// AC-GUARD-1: isReplayOfApplied unit tests
+// ============================================================================
+describe("isReplayOfApplied (replay guard)", () => {
+  it("returns true when candidate id matches applied eventId", () => {
+    const id = "a".repeat(64);
+    const candidate = { id, contentHash: new Uint8Array(32) };
+    const applied = {
+      eventId: id,
+      contentHash: new Uint8Array(32),
+    };
+    expect(isReplayOfApplied(candidate, applied)).toBe(true);
+  });
+
+  it("returns true when the MLS-message content hash matches (id differs)", () => {
+    const contentHash = sha256(new TextEncoder().encode("serialized-mls"));
+    const candidate = { id: "b".repeat(64), contentHash };
+    const applied = { eventId: "a".repeat(64), contentHash };
+    expect(isReplayOfApplied(candidate, applied)).toBe(true);
+  });
+
+  it("returns false when neither id nor content hash matches", () => {
+    const candidate = {
+      id: "b".repeat(64),
+      contentHash: sha256(new TextEncoder().encode("different")),
+    };
+    const contentHash = sha256(new TextEncoder().encode("other-content"));
+    const applied = { eventId: "a".repeat(64), contentHash };
+    expect(isReplayOfApplied(candidate, applied)).toBe(false);
+  });
+
+  it("compares all hash bytes (not short-circuiting on first mismatch)", () => {
+    // Build two different hashes that share a prefix; confirm we detect inequality.
+    const hash1 = sha256(new TextEncoder().encode("content-A"));
+    const hash2 = new Uint8Array(hash1);
+    hash2[hash2.length - 1] ^= 0xff; // flip only the last byte
+    const candidate = { id: "b".repeat(64), contentHash: hash1 };
+    const applied = { eventId: "a".repeat(64), contentHash: hash2 };
+    expect(isReplayOfApplied(candidate, applied)).toBe(false);
   });
 });

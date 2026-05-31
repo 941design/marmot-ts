@@ -1,0 +1,158 @@
+{
+  "epic_name": "concurrent-commit-fork-resolution",
+  "status": "done",
+  "phase": "COMPLETE",
+  "created_at": "2026-05-31T00:00:00Z",
+  "updated_at": "2026-05-31T00:00:00Z",
+  "pre_existing_dirty_files": [
+    "marmot-ts-mip00-keypackage-compliance.md",
+    "specs/marmot-ts-concurrent-commit-fork-resolution.md",
+    "specs/marmot-ts-mip00-keypackage-compliance.md",
+    "specs/marmot-ts-rumor-sender-authentication.md",
+    "specs/marmot-ts-shared-ts-mls-feature-request.md",
+    "specs/marmot-ts-welcome-grace-window-2.md",
+    "specs/marmot-ts-welcome-grace-window.md"
+  ],
+  "completed_stories": ["S1", "S2", "S3", "S4"],
+  "escalated_stories": [],
+  "phase_history": [
+    {
+      "phase": "SPEC_VALIDATED",
+      "timestamp": "2026-05-31T00:00:00Z",
+      "trigger": "validation_passed"
+    },
+    {
+      "phase": "STORIES_PLANNED",
+      "timestamp": "2026-05-31T00:00:00Z",
+      "trigger": "mode3_complete"
+    },
+    {
+      "phase": "STORIES_COMPLETE",
+      "timestamp": "2026-05-31T00:00:00Z",
+      "trigger": "all_stories_done"
+    },
+    {
+      "phase": "COMPLETE",
+      "timestamp": "2026-05-31T00:00:00Z",
+      "trigger": "all_stories_done"
+    }
+  ],
+  "plugin_sha": "f5e4524c7b9618d99914da272f8e8e9745ed9057",
+  "consumer_sha": "7f2ad9e71f1f8ede48d738e46297fd115eaed7f6",
+  "models": {
+    "lead": "sonnet",
+    "examiner": "haiku",
+    "implementer": "sonnet"
+  },
+  "completed_at": "2026-05-31T00:00:00Z",
+  "mutation_gate": {
+    "verdict": "passed",
+    "modules": [
+      {
+        "module": "src/core/group-message.ts",
+        "score": 0.86,
+        "tests_written": 21
+      }
+    ],
+    "deferred": [
+      "marmot-group.ts",
+      "groups-manager.ts",
+      "marmot-client.ts",
+      "epoch-snapshot.ts",
+      "in-memory-epoch-snapshot-store.ts"
+    ]
+  },
+  "e2e_gate": {
+    "verdict": "skipped",
+    "reason": "no e2e infrastructure"
+  },
+  "post_review_hardening": {
+    "source": "user-run Codex working-tree review (the aggregate pass the in-session gate could not run)",
+    "date": "2026-05-31",
+    "findings_fixed": [
+      {
+        "severity": "P1",
+        "summary": "rollback regressed state before validating the winner — a crafted better-metadata commit that fails MLS/admin validation could force epoch regression and discard the valid branch. Fixed: validate winner against a throwaway deserialized snapshot before any mutation; only roll back on success.",
+        "test": "rollback-event.test.ts regression-guard"
+      },
+      {
+        "severity": "P1",
+        "summary": "past-epoch-only ingest batch advanced this.state (Step 1b) but exited via the read.length===0 early return before save(), leaving persisted state stale. Fixed: save() before the early return when Step 1b processed anything."
+      },
+      {
+        "severity": "P2",
+        "summary": "Step 1b past-epoch app path bypassed the #sentEventIds self-echo guard; a senders own echo decrypted via a retained past key could be re-processed (desired-gen-in-the-past / duplicate history). Fixed: self-echo guard added to Step 1b."
+      },
+      {
+        "severity": "P2",
+        "summary": "Prettier formatting failures on changed source + spec files. Fixed: formatted."
+      }
+    ],
+    "test_gap_closed": "Added a genuine cross-batch rollback test (winner arrives in a later batch, decrypted only via the retained past-epoch key) proving S2+S4 resolve the real delayed-delivery fork.",
+    "tests": {
+      "before": 500,
+      "after": 502
+    }
+  },
+  "post_review_hardening_round2": {
+    "source": "second user-run Codex working-tree review",
+    "date": "2026-05-31",
+    "findings_fixed": [
+      {
+        "severity": "High",
+        "summary": "Rollback persisted the rolled-back state before the winner was re-applied (premature #rollbackToEpoch save + later set/processMessage could fail), leaving durable regression. Fixed: rollback is now single-process and transactional — the winner is applied once against a deserialized snapshot with a state-bound callback, and this.state is mutated only on success; the final ingest save() persists it. #rollbackToEpoch removed."
+      },
+      {
+        "severity": "High",
+        "summary": "A better candidate that failed validation was permanently skipped as lost-race; missing proposal refs / temporarily-unverifiable state could become valid later. Fixed: on validation throw the winner is queued to unreadable for retry, preserving eventual convergence."
+      },
+      {
+        "severity": "High",
+        "summary": "Admin verification used a callback captured once before the loop, carrying a stale ratchet tree across rollback and multi-commit batches. Fixed: callback now built from the exact state each commit is processed against (createAdminVerificationCallbackForState)."
+      },
+      {
+        "severity": "Medium",
+        "summary": "Locally-sent app messages were not tracked in #messagesByEpoch, so a rollback omitted them from invalidatedMessages. Fixed: sendApplicationRumor records the sent event under its epoch."
+      },
+      {
+        "severity": "Medium",
+        "summary": "selfUpdate()/commit() did not pass #mlsClientConfig to createCommit, so inner-layer past-epoch retention (default 4) lagged the outer window (pastEpochDepth=5). Fixed: clientConfig threaded into both createCommit calls."
+      }
+    ],
+    "tests_added": [
+      "rollback transactional regression guard (round 1)",
+      "cross-batch rollback via past-epoch window (round 1)",
+      "locally-sent message invalidation (round 2)"
+    ],
+    "tests": {
+      "before": 502,
+      "after": 503
+    }
+  },
+  "post_review_hardening_round3": {
+    "source": "third user-run Codex working-tree review",
+    "date": "2026-05-31",
+    "findings_fixed": [
+      {
+        "summary": "Replay guard hashed the outer Nostr event.content, which createGroupEvent NIP-44-wraps with a fresh nonce per wrap — so a re-wrapped duplicate of an applied commit bypassed the guard and could trigger a spurious rollback. Fixed: hash the deterministic serialized MLS message via new exported mlsCommitContentHash; isReplayOfApplied now compares precomputed hashes."
+      },
+      {
+        "summary": "A winning commit referencing an external proposal not in the snapshot stayed stuck unreadable (the late proposal was processed against current state, never the snapshot), breaking convergence for proposal-reference commits. Fixed: past-epoch proposals are merged into the matching epoch snapshot so a pending rollback can resolve the reference."
+      },
+      {
+        "summary": "pastEpochDepth was exposed on MarmotGroupOptions but not forwarded through MarmotClient.groupOptions or GroupsManagerOptions, so main-client consumers could not configure the window. Fixed: threaded through both."
+      },
+      {
+        "summary": "pnpm-lock.yaml and epic-state.json failed prettier --check, so pnpm lint failed on a clean checkout. Fixed: pnpm-lock.yaml added to .prettierignore (generated artifact); epic-state.json formatted."
+      }
+    ],
+    "tests_added": [
+      "replay guard recognises a re-wrapped duplicate commit",
+      "past-epoch proposal merges into the matching snapshot"
+    ],
+    "tests": {
+      "before": 503,
+      "after": 505
+    }
+  }
+}

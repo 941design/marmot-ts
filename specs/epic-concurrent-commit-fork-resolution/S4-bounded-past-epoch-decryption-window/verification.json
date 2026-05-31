@@ -1,0 +1,81 @@
+{
+  "story_id": "S4",
+  "authored_by": "story-planner",
+  "authored_at": "2026-05-31T00:00:00.000Z",
+  "questions": [
+    {
+      "question_id": "VQ-S4-001",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-PAST-1",
+      "question": "Is there an integration test in `src/client/group/__tests__/past-epoch-decrypt.test.ts` that places a member at epoch N, sends it an application message encrypted under epoch N+1 (within `pastEpochDepth = 5`), and asserts: (a) the message is successfully decrypted using retained past-epoch key material, (b) no rollback is triggered, and (c) no `rollback` event is emitted? Show the test body and its three assertions."
+    },
+    {
+      "question_id": "VQ-S4-002",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-PAST-2",
+      "question": "Is there a unit test in `src/client/group/__tests__/past-epoch-decrypt.test.ts` that places a member more than `pastEpochDepth` epochs behind, attempts to decrypt an application message outside the window, and asserts the message is yielded as unreadable (or deferred) — not silently dropped and not causing a rollback? Show the boundary assertion."
+    },
+    {
+      "question_id": "VQ-S4-003",
+      "phase": "pre-impl",
+      "category": "QUALITY",
+      "question": "Does the past-epoch decryption path in `ingest()` Step 1 cleanly prune retained key material after the window is exceeded — retaining only `pastEpochDepth` epochs' worth of keys and discarding older ones on each advance? Confirm there is no unbounded key accumulation by reading the prune call site for past-epoch key material (separate from the snapshot store prune for `snapshotDepth`)."
+    },
+    {
+      "question_id": "VQ-S4-004",
+      "phase": "pre-impl",
+      "category": "ARCHITECTURE",
+      "question": "Is the past-epoch decryption path implemented as a separate code path within `ingest()` Step 1 (decrypt failure → try past-epoch keys → yield success or unreadable) that is entirely independent of the rollback path added in S2? Confirm the two code paths do not share branching logic — a successful past-epoch decrypt MUST NOT invoke `rollbackToEpoch()` or touch the rollback decision tree."
+    },
+    {
+      "question_id": "VQ-S4-005",
+      "phase": "pre-impl",
+      "category": "ARCHITECTURE",
+      "question": "Could the past-epoch decryption window logic in `marmot-group.ts` be deleted and rewritten without modifying any file outside `src/client/group/marmot-group.ts` and its test file `src/client/group/__tests__/past-epoch-decrypt.test.ts`? If not, list every file that would require change and confirm it is within S4's declared scope boundary in `stories.json`."
+    },
+    {
+      "question_id": "VQ-S4-006",
+      "phase": "pre-impl",
+      "category": "TEST",
+      "question": "Does the test for AC-PAST-1 verify decryption success using a real MLS group state (or a sufficiently realistic integration mock) rather than a unit test that stubs the decrypt call and checks only that a stub was invoked? The test MUST confirm that the actual ciphertext decrypts to the original plaintext using the retained key material."
+    },
+    {
+      "question_id": "VQ-S4-007",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "question": "Does `MarmotGroupOptions` in `src/client/group/marmot-group.ts` include an optional `pastEpochDepth?: number` field that defaults to 5 when omitted? Show (a) the field addition to `MarmotGroupOptions`, (b) the constructor code that applies the default, and (c) a test confirming the default value is 5."
+    },
+    {
+      "question_id": "VQ-S4-008",
+      "phase": "pre-impl",
+      "category": "SECURITY",
+      "question": "Does the past-epoch key retention strategy ensure that once a retained epoch's keys fall outside the `pastEpochDepth` window they are removed from memory (not merely unfindable) on the next state advance? Is there a test or code comment confirming that key material older than `pastEpochDepth` epochs is actively discarded, not just excluded from lookup?"
+    },
+    {
+      "question_id": "VQ-S4-009",
+      "phase": "post-impl",
+      "category": "ARCHITECTURE",
+      "question": "The outer NIP-44 layer (ChaCha20-Poly1305 with exporter_secret) and the inner MLS layer (processPrivateMessage with historicalReceiverData) are both handled in S4's two-layer decrypt path. The outer layer is handled by `#pastEpochExporterSecrets` in MarmotGroup, and the inner layer is handled natively by ts-mls via `historicalReceiverData`. Does the `#mlsClientConfig` with `retainKeysForEpochs: pastEpochDepth` correctly ensure ts-mls retains enough inner-layer receiver data to match the outer-layer window depth? Confirm they stay in sync when `pastEpochDepth` is set to a non-default value."
+    },
+    {
+      "question_id": "VQ-S4-010",
+      "phase": "post-impl",
+      "category": "SECURITY",
+      "question": "In `#recordAndPruneExporterSecret`, old exporter_secret bytes are zeroed via `key.fill(0)` before the map entry is deleted. However, the state setter (`this.state = newState`) is called AFTER `#recordAndPruneExporterSecret` for commit-via-ingest advances but BEFORE for selfUpdate and commit(). Is there any race window where ts-mls also zeros the exporterSecret from the state before we capture it? Specifically: does ts-mls call `zeroOutUint8Array` on the old epoch's `keySchedule.exporterSecret` during `processCommit`? If so, the copy in `#recordAndPruneExporterSecret` (which calls `.slice()`) would still have the original bytes since the slice is taken before ts-mls advances the state."
+    },
+    {
+      "question_id": "VQ-S4-011",
+      "phase": "post-impl",
+      "category": "TEST",
+      "question": "The `buildGroupAtEpoch` helper in the test file creates commits from the admin state and processes them sequentially on the member group. Does this correctly produce a consistent multi-epoch advance where each commit's group context matches what the member's state expects — specifically that the ratchet tree and epoch agree between the admin's commit and the member's processMessage call? The debug test (now removed) confirmed this works; ensure no future refactor of `buildGroupAtEpoch` breaks this invariant."
+    },
+    {
+      "question_id": "VQ-S4-012",
+      "phase": "post-impl",
+      "category": "BEST_PRACTICES",
+      "question": "Was the Codex review completed successfully for S4's working-tree changes? If not, confirm the lead-authorized skip was recorded and the pre-commit gate Codex pass covered the S4 diff."
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "story_id": "S2",
+  "captured_at": "2026-05-31T00:00:00.000Z",
+  "test_count": 454,
+  "test_files": 28,
+  "lint": "8 pre-existing issues (specs/ markdown files and src/core/__tests__/key-package-event.test.ts, src/core/key-package-event.ts)",
+  "typecheck": "clean"
+}

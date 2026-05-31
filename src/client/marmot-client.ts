@@ -29,6 +29,10 @@ import {
   GroupMediaFactory,
   MarmotGroup,
 } from "./group/marmot-group.js";
+import type {
+  EpochSnapshotStoreBackend,
+  EpochSnapshotStoreFactory,
+} from "./group/epoch-snapshot.js";
 import { GroupsManager } from "./groups-manager.js";
 import { InviteManager, StoredInviteEntry } from "./invite-manager.js";
 import type { StoredKeyPackage } from "./key-package-manager.js";
@@ -69,6 +73,19 @@ export type MarmotClientOptions<
    * rejected at create()/rotate() time.
    */
   clientId?: string;
+  /**
+   * Options forwarded to every {@link MarmotGroup} instance created by this
+   * client.  Use `snapshots` to inject a custom epoch snapshot backend;
+   * `snapshotDepth` overrides the default rollback-snapshot retention (2
+   * epochs); `pastEpochDepth` overrides the default past-epoch decryption
+   * window (5 epochs) used to decrypt recent messages from epochs the member
+   * has already advanced past.
+   */
+  groupOptions?: {
+    snapshots?: EpochSnapshotStoreBackend | EpochSnapshotStoreFactory;
+    snapshotDepth?: number;
+    pastEpochDepth?: number;
+  };
 } & (THistory extends undefined
   ? {}
   : {
@@ -128,6 +145,9 @@ export class MarmotClient<
       cryptoProvider: this.cryptoProvider,
       historyFactory,
       mediaFactory,
+      snapshotsBackend: options.groupOptions?.snapshots,
+      snapshotDepth: options.groupOptions?.snapshotDepth,
+      pastEpochDepth: options.groupOptions?.pastEpochDepth,
     });
 
     this.invites = new InviteManager({

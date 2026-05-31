@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "pnpm",
+  "testRunner": "vitest",
+  "plugins": ["@stryker-mutator/vitest-runner"],
+  "reporters": ["html", "json", "progress"],
+  "htmlReporter": {
+    "fileName": "reports/mutation/group-message/index.html"
+  },
+  "jsonReporter": {
+    "fileName": "reports/mutation/group-message/mutation.json"
+  },
+  "mutate": ["src/core/group-message.ts"],
+  "coverageAnalysis": "perTest",
+  "timeoutMS": 60000,
+  "concurrency": 4,
+  "ignorePatterns": [".pnpm-store", "reports", "dist", ".vitepress"]
+}

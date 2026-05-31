@@ -1,0 +1,8 @@
+{
+  "story_id": "S4",
+  "captured_at": "2026-05-31T00:00:00.000Z",
+  "test_count": 475,
+  "test_status": "all_passing",
+  "lint": "pre-existing prettier failures (not introduced by S4)",
+  "typecheck": "clean"
+}

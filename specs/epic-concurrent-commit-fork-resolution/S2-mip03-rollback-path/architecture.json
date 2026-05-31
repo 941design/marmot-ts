@@ -1,0 +1,56 @@
+{
+  "module_name": "marmot-group (rollback extension)",
+  "purpose": "Replace the dead-end past-epoch skip in ingest() with MIP-03 convergence logic: roll back to the epoch snapshot and re-apply the deterministically-better commit when a competing commit arrives for an epoch already advanced past.",
+  "public_api": [
+    {
+      "name": "RollbackInfo",
+      "signature": "export interface RollbackInfo { groupId: Uint8Array; targetEpoch: bigint; newHeadCommitEventId: string; invalidatedMessages: string[]; messagesNeedingRefetch?: string[]; }",
+      "description": "Describes a completed rollback to a prior epoch. invalidatedMessages and messagesNeedingRefetch are populated in S3; S2 emits with empty arrays."
+    },
+    {
+      "name": "isBetterCandidate",
+      "signature": "export function isBetterCandidate(candidate: { id: string; created_at: number }, applied: { eventId: string; createdAt: number }): boolean",
+      "description": "MIP-03 tiebreak: true when candidate is the deterministically better commit. Earliest created_at wins; on tie, lexicographically smallest event id wins."
+    },
+    {
+      "name": "isReplayOfApplied",
+      "signature": "export function isReplayOfApplied(candidate: { id: string; content: string }, applied: { eventId: string; contentHash: Uint8Array }): boolean",
+      "description": "Replay guard: true when candidate is a re-delivery of the already-applied commit (same id or matching SHA-256 content hash)."
+    },
+    {
+      "name": "sortGroupCommits (updated)",
+      "signature": "export function sortGroupCommits(commits: GroupMessagePair[]): GroupMessagePair[]",
+      "description": "Now delegates to isBetterCandidate to ensure a single MIP-03 comparator."
+    }
+  ],
+  "private_files": [
+    "src/client/group/marmot-group.ts (#rollbackToEpoch method)"
+  ],
+  "owned_data": [
+    "RollbackInfo type definition (in marmot-group.ts)",
+    "ingest() rollback decision tree",
+    "#rollbackToEpoch() private method"
+  ],
+  "dependencies_allowed": [
+    "src/core/group-message.ts (isBetterCandidate, isReplayOfApplied)",
+    "src/client/group/epoch-snapshot.ts (EpochSnapshot, EpochSnapshotStoreBackend)",
+    "src/core/client-state.ts (deserializeClientState, serializeClientState)",
+    "@noble/hashes/sha2.js (sha256, already imported)",
+    "fast-check (devDependency for property tests only)"
+  ],
+  "dependencies_forbidden": [
+    "No imports from src/client/ in src/core/",
+    "No direct mutation of #state bypassing the setter"
+  ],
+  "external_ports": [
+    "EpochSnapshotStoreBackend (storage seam — injected, already wired by S1)"
+  ],
+  "events_emitted": [],
+  "events_consumed": [],
+  "test_targets": [
+    "src/core/__tests__/group-message.test.ts (isBetterCandidate, isReplayOfApplied unit tests)",
+    "src/client/group/__tests__/rollback.test.ts (rollbackToEpoch round-trip)",
+    "src/__tests__/integration/ingest-commit-race.test.ts (AC-ROLL-1, AC-ROLL-5, AC-GUARD-1, AC-GUARD-2, AC-REG-1)",
+    "src/__tests__/integration/convergence-property.test.ts (AC-PROP-1 fast-check property test)"
+  ]
+}

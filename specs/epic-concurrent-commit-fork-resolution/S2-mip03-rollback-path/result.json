@@ -1,0 +1,60 @@
+{
+  "story_id": "S2",
+  "status": "done",
+  "remediation_rounds": 1,
+  "summary": "Replaced the past-epoch skip in ingest() with the MIP-03 rollback decision tree. Added isBetterCandidate and isReplayOfApplied to src/core/group-message.ts, the RollbackInfo type and #rollbackToEpoch() private method to marmot-group.ts, and two new skipped reasons (self-echo-commit, lost-race). All acceptance criteria covered by 17 new tests.",
+  "files_created": [
+    "specs/epic-concurrent-commit-fork-resolution/S2-mip03-rollback-path/architecture.json",
+    "specs/epic-concurrent-commit-fork-resolution/S2-mip03-rollback-path/baseline.json",
+    "specs/epic-concurrent-commit-fork-resolution/S2-mip03-rollback-path/result.json",
+    "src/client/group/__tests__/rollback.test.ts",
+    "src/__tests__/integration/convergence-property.test.ts"
+  ],
+  "files_modified": [
+    "src/core/group-message.ts",
+    "src/core/__tests__/group-message.test.ts",
+    "src/client/group/marmot-group.ts",
+    "src/__tests__/integration/ingest-commit-race.test.ts",
+    "src/__tests__/exports.test.ts",
+    "specs/epic-concurrent-commit-fork-resolution/S2-mip03-rollback-path/verification.json",
+    "package.json"
+  ],
+  "tests_added": {
+    "unit": 8,
+    "integration": 7,
+    "property": 1,
+    "rollback_unit": 3,
+    "total": 17
+  },
+  "test_counts": {
+    "baseline": 454,
+    "final": 471
+  },
+  "mocks_introduced": [],
+  "reviews": {
+    "ollama": "skipped: lead-authorized (OLLAMA_REVIEW_MODEL not set)",
+    "codex": "ran — P1 (delayed delivery limitation = S4 scope, not a bug); P2 (Prettier format) fixed"
+  },
+  "retrospective": {
+    "skipped": false,
+    "harder_than_needed": "The rollback scenario requires both competing commits to arrive in the same ingest() batch for decryption to succeed (both encrypted with epoch-N exporter_secret). This architectural boundary between S2 (same-batch rollback) and S4 (past-epoch decryption window) was implicit in the spec but only became fully clear when designing the rollback test. The AC-ROLL-5 test for 'both delivery orderings' was simplified to same-batch permutations because cross-batch delivery is an S4 concern.",
+    "surprised_by": "",
+    "scope": "project_specific",
+    "outcome": "merged",
+    "commits_made": [],
+    "absorbed_from": [
+      {
+        "agent": "codex:review",
+        "note": "P1: rollback only works within same ingest batch; delayed cross-epoch delivery is S4 scope. P2: Prettier format issue on convergence-property.test.ts — fixed."
+      }
+    ],
+    "lead_clarifications": [
+      {
+        "question": "AC-ROLL-1 cross-decryptability assertion was missing (examiner PARTIAL, sev 5)",
+        "answer": "Lead added a faithful cross-decrypt round-trip: admin winner sends an application message, rolled-back member decrypts it via real ingest path. Test passes; all 471 green."
+      }
+    ]
+  },
+  "final_outcome": "accepted",
+  "completed_at": "2026-05-31T00:00:00Z"
+}

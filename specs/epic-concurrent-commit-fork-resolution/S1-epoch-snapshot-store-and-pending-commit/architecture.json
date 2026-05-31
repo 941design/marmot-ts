@@ -1,0 +1,52 @@
+{
+  "module_name": "epoch-snapshot",
+  "purpose": "Epoch snapshot storage infrastructure: types, backend interface, factory type, and in-memory reference implementation. Provides the persistence seam for pre-apply MLS state snapshots used by the concurrent-commit rollback path.",
+  "public_api": [
+    {
+      "name": "EpochSnapshot",
+      "signature": "interface EpochSnapshot { groupId: Uint8Array; epoch: bigint; state: SerializedClientState; appliedCommit?: { eventId: string; createdAt: number; contentHash: Uint8Array }; }",
+      "description": "Immutable snapshot of group MLS state at a given epoch, optionally annotated with the commit event that caused the transition."
+    },
+    {
+      "name": "EpochSnapshotStoreBackend",
+      "signature": "interface EpochSnapshotStoreBackend { get(groupIdHex: string, epoch: bigint): Promise<EpochSnapshot | null>; set(groupIdHex: string, epoch: bigint, snapshot: EpochSnapshot): Promise<void>; prune(groupIdHex: string, keepAboveEpoch: bigint): Promise<void>; clear(groupIdHex: string): Promise<void>; }",
+      "description": "Storage backend contract for epoch snapshots. Implementations may be in-memory or persistent."
+    },
+    {
+      "name": "EpochSnapshotStoreFactory",
+      "signature": "type EpochSnapshotStoreFactory = (groupId: Uint8Array) => EpochSnapshotStoreBackend",
+      "description": "Factory function that creates a backend scoped to a given group ID."
+    },
+    {
+      "name": "InMemoryEpochSnapshotStore",
+      "signature": "class InMemoryEpochSnapshotStore implements EpochSnapshotStoreBackend",
+      "description": "In-memory reference implementation of EpochSnapshotStoreBackend using a Map. Exported from src/extra/."
+    }
+  ],
+  "private_files": [
+    "src/client/group/epoch-snapshot.ts",
+    "src/extra/in-memory-epoch-snapshot-store.ts"
+  ],
+  "owned_data": [
+    "EpochSnapshot shape",
+    "EpochSnapshotStoreBackend contract",
+    "EpochSnapshotStoreFactory type",
+    "In-memory snapshot Map"
+  ],
+  "dependencies_allowed": [
+    "src/core/client-state.ts (SerializedClientState type import only)"
+  ],
+  "dependencies_forbidden": [
+    "src/client/group/marmot-group.ts",
+    "src/client/ (any module except via type imports from epoch-snapshot.ts itself)"
+  ],
+  "external_ports": [
+    "EpochSnapshotStoreBackend — injected into MarmotGroup via MarmotGroupOptions.snapshots"
+  ],
+  "events_emitted": [],
+  "events_consumed": [],
+  "test_targets": [
+    "src/extra/__tests__/in-memory-epoch-snapshot-store.test.ts",
+    "src/client/group/__tests__/marmot-group-snapshots.test.ts"
+  ]
+}

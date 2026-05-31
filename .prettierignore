@@ -3,3 +3,5 @@ references/
 node_modules/
 examples/node_modules/
 examples/dist/
+# Generated lockfile — owned by pnpm, not Prettier.
+pnpm-lock.yaml

@@ -1,0 +1,117 @@
+{
+  "story_id": "S1",
+  "authored_by": "story-planner",
+  "authored_at": "2026-05-31T00:00:00.000Z",
+  "questions": [
+    {
+      "question_id": "VQ-S1-001",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-STRUCT-1",
+      "question": "Does `src/client/group/epoch-snapshot.ts` export `EpochSnapshot` with exactly the fields `groupId`, `epoch`, `state`, and optional `appliedCommit` (containing `eventId`, `createdAt`, `contentHash`), and does it also export `EpochSnapshotStoreBackend` with methods `get`, `set`, `prune`, and `clear`? Are both names re-exported from `src/client/group/index.ts`? Provide (a) the TypeScript interface/type source text, (b) the re-export line in `index.ts`, and (c) a compilation check confirming no TypeScript error."
+    },
+    {
+      "question_id": "VQ-S1-002",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-STRUCT-3",
+      "question": "Does `MarmotGroupOptions` in `src/client/group/marmot-group.ts` include an optional `snapshots?: EpochSnapshotStoreBackend | EpochSnapshotStoreFactory` field, and does `MarmotGroup` default to an in-memory snapshot store with `snapshotDepth = 2` when the field is omitted? Show (a) the updated `MarmotGroupOptions` type definition, (b) the constructor code that applies the default, and (c) a test asserting that constructing without `snapshots` results in `snapshotDepth === 2`."
+    },
+    {
+      "question_id": "VQ-S1-003",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-STRUCT-5",
+      "question": "Does `src/extra/in-memory-epoch-snapshot-store.ts` export a named class `InMemoryEpochSnapshotStore` that implements `EpochSnapshotStoreBackend`, and is it re-exported from `src/extra/index.ts` so it is accessible via the `@internet-privacy/marmot-ts/extra` subpath? Show (a) the class declaration line, (b) the `src/extra/index.ts` re-export line, and (c) the `package.json` `exports` entry for `./extra`."
+    },
+    {
+      "question_id": "VQ-S1-004",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-SNAP-1",
+      "question": "In `ingest()` in `src/client/group/marmot-group.ts`, is `EpochSnapshotStoreBackend.set` called with the pre-apply `SerializedClientState` plus the commit event's `eventId`, `createdAt`, and SHA-256 `contentHash` before `processMessage()` is invoked? And does `ingest()` propagate (not swallow) any error thrown by the snapshot store? Provide (a) the relevant `ingest()` code block, (b) the test that triggers a store throw and asserts propagation."
+    },
+    {
+      "question_id": "VQ-S1-005",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-SNAP-2",
+      "question": "In `selfUpdate()` and `commit()`, is `EpochSnapshotStoreBackend.set` called with the pre-advance snapshot before `this.state` is updated (after `hasAck`), and does the existing `hasAck`-before-advance invariant remain intact? Show (a) the updated `selfUpdate()` and `commit()` code sections, and (b) a test that records the snapshot store calls and verifies the snapshot precedes the state update."
+    },
+    {
+      "question_id": "VQ-S1-006",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-SNAP-3",
+      "question": "When `selfUpdate()` or `commit()` receives no relay ack (`!hasAck(response)`), does the implementation leave `this.state` unchanged, skip `save()`, and ensure that `EpochSnapshotStoreBackend.get` for the would-be new epoch returns `null`? Show (a) the publish-failure branch code, (b) a unit test that simulates `!hasAck` and then calls `get` on the snapshot store to confirm `null`."
+    },
+    {
+      "question_id": "VQ-S1-007",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-RET-1",
+      "question": "After each commit advance, is `EpochSnapshotStoreBackend.prune` called with `keepAboveEpoch = currentEpoch - snapshotDepth`? Does a test using `InMemoryEpochSnapshotStore` with `snapshotDepth = 2`, after advancing from epoch 0 through epoch 5, confirm that snapshots for epochs 0, 1, and 2 are absent and at most snapshots for epochs 3 and 4 remain? Show (a) the prune call site, (b) the test assertions on epoch presence/absence."
+    },
+    {
+      "question_id": "VQ-S1-008",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-RET-2",
+      "question": "When `MarmotGroup` is constructed without a `snapshots` option, does `snapshotDepth` default to 2, and after three consecutive commit advances does the snapshot store hold at most 2 entries (the two most recent pre-commit states)? Show the test that constructs without `snapshots` and verifies the retention count after three advances."
+    },
+    {
+      "question_id": "VQ-S1-009",
+      "phase": "pre-impl",
+      "category": "QUALITY",
+      "question": "Does `src/client/group/epoch-snapshot.ts` contain no stub markers (`TODO`, `FIXME`, `XXX`, `@ts-ignore`, `@ts-expect-error`), no dead code paths, and no unused local variables or parameters (the TypeScript build is strict on `noUnusedLocals` / `noUnusedParameters`)? Run `pnpm build` and confirm zero errors."
+    },
+    {
+      "question_id": "VQ-S1-010",
+      "phase": "pre-impl",
+      "category": "ARCHITECTURE",
+      "question": "Does `src/client/group/epoch-snapshot.ts` import only from `src/core/` (for `SerializedClientState` and related types) and from no other `src/client/` module — specifically never from `marmot-group.ts`? Does `src/extra/in-memory-epoch-snapshot-store.ts` import only from `src/client/group/epoch-snapshot.ts` and no other `src/client/` module? Verify by checking the import lines in both files."
+    },
+    {
+      "question_id": "VQ-S1-011",
+      "phase": "pre-impl",
+      "category": "ARCHITECTURE",
+      "question": "Could `epoch-snapshot.ts` be deleted and rewritten without modifying any file outside its `dependencies_allowed` list (`src/core/` type imports only)? If not, which cross-module dependencies exist beyond what architecture.md permits, and do they flow through declared seam contracts? List every import in `epoch-snapshot.ts` and confirm each is within the allowed boundary."
+    },
+    {
+      "question_id": "VQ-S1-012",
+      "phase": "pre-impl",
+      "category": "TEST",
+      "question": "Are the `EpochSnapshotStoreBackend` contract invariants (get-returns-null-before-set, set-then-get round-trip, prune removes entries at-or-below epoch, clear removes all entries for a group) each covered by at least one test in `InMemoryEpochSnapshotStore`'s test suite, and do those tests assert on observable state rather than internal spy calls?"
+    },
+    {
+      "question_id": "VQ-S1-013",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "question": "Does `pnpm vitest run` pass for all files touched by S1 (`epoch-snapshot.ts`, `in-memory-epoch-snapshot-store.ts`, and the `marmot-group.ts` snapshot-wiring tests) with zero test failures and zero TypeScript compile errors?"
+    },
+    {
+      "question_id": "VQ-S1-014",
+      "phase": "pre-impl",
+      "category": "BEST_PRACTICES",
+      "question": "Does the SHA-256 content hash stored in `appliedCommit.contentHash` use a stable, deterministic input (the raw commit event `content` field as a UTF-8 byte sequence), and is the same hashing utility reused consistently with the rest of the codebase (e.g. `@noble/hashes/sha256`)? Confirm there is no ad-hoc re-implementation of SHA-256 and no conditional content transformation before hashing."
+    },
+    {
+      "question_id": "VQ-S1-015",
+      "phase": "post-impl",
+      "category": "REVIEW",
+      "question": "REVIEW SKIPPED: ollama unavailable (lead-authorized). Codex review ran twice (two rounds of fixes). First round found: prune-failure in ingest() inside the commit-error catch (fixed — wrapped in best-effort try/catch); clear() never called in destroy() (fixed — destroy() now calls clear()); missing changeset for new public snapshot API (fixed — .changeset/epoch-snapshot-store.md added). Second round found: snapshot set() and prune() in selfUpdate() and commit() could abort already-ACKed advances on backend rejection (fixed — wrapped as best-effort). Untracked .pnpm-store and .clauded.yaml flagged by both rounds; these are local developer artifacts that will not be committed and do not block S1. All 454 tests pass after each remediation round."
+    },
+    {
+      "question_id": "VQ-S1-016",
+      "phase": "post-impl",
+      "category": "ARCHITECTURE",
+      "question": "Are all snapshot store calls in selfUpdate(), commit(), and the ingest() commit-apply path now wrapped as best-effort (try/catch with non-fatal log), so that a custom persistent backend rejection can never abort an already-ACKed epoch transition or make an applied commit appear unprocessed on retry?"
+    },
+    {
+      "question_id": "VQ-S1-017",
+      "phase": "post-impl",
+      "category": "SPEC",
+      "question": "Does MarmotGroup.destroy() call this.#snapshots.clear() with the group's hex ID, ensuring that persistent snapshot backends do not retain serialized MLS ClientState bytes and old epoch secrets after a group is deleted or left?"
+    }
+  ]
+}

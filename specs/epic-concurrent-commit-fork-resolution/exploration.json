@@ -1,0 +1,134 @@
+{
+  "created_at": "2026-05-31T00:00:00Z",
+  "prior_learnings": [],
+  "similar_features": {
+    "save_and_persist_pattern": {
+      "key": "bytesToHex(this.id) — group-id hex, no per-epoch namespace",
+      "value_type": "SerializedClientState (Uint8Array, raw TLS bytes from ts-mls encode())",
+      "write_path": "MarmotGroup.save() → store.setItem(bytesToHex(this.id), stateBytes) — single live-state slot per group",
+      "read_path": "GroupsManager.#loadGroup() → store.getItem(hex) → deserializeClientState(bytes)",
+      "source": "src/client/group/marmot-group.ts:460–467; src/core/client-state.ts:76–103"
+    },
+    "ingest_structure": {
+      "steps": [
+        "Step 1 (line 1176): decryptGroupMessages — tries NIP-44 decrypt with current exporter_secret. Output: {read, unreadable}.",
+        "Step 2 (line 1228): Partition read into commits and nonCommits by contentType.",
+        "Step 3 (line 1257): Process nonCommits (proposals, app messages). Self-echo guard, processMessage() updates this.state.",
+        "Step 4 (line 1339): sortGroupCommits(commits) — deterministic MIP-03 order.",
+        "Step 5 (line 1351): Process commits: wrong-wireformat skip, past-epoch skip (THE FORK DEAD-END at 1368–1376), future-epoch deferred to retry, current-epoch processMessage() + advance.",
+        "Step 6 (line 1473): Recursive retry of unreadable events if any (maxRetries default 5)."
+      ],
+      "fork_dead_end": "marmot-group.ts:1368–1376 — commitEpoch < currentEpoch unconditionally yields skipped/past-epoch",
+      "future_epoch_deferred": "marmot-group.ts:1381–1396 — commitEpoch > currentEpoch + 1n pushed to errorList/unreadable",
+      "current_epoch_apply": "implicit after the two guards — processMessage() → this.state = result.newState → save()"
+    },
+    "commit_advance_pattern": {
+      "description": "All mutation methods: createCommit → publish → hasAck guard → this.state = newState → save()",
+      "locations": {
+        "selfUpdate": "marmot-group.ts:507–511",
+        "commit": "marmot-group.ts:897–901",
+        "sendProposal": "marmot-group.ts:648–651"
+      },
+      "no_snapshot": "Pre-commit state is discarded; this.state = newState overwrites in place with no copy kept"
+    },
+    "event_emission_pattern": {
+      "base_class": "EventEmitter<MarmotGroupEvents<THistory, TMedia>> from eventemitter3",
+      "event_map_location": "marmot-group.ts:293–308",
+      "existing_events": [
+        "stateChanged",
+        "applicationMessage",
+        "stateSaved",
+        "destroyed",
+        "historyError"
+      ],
+      "rollback_slot": "Add rollback: (info: RollbackInfo) => void to MarmotGroupEvents type map"
+    },
+    "existing_snapshot_or_pending": "CONFIRMED ABSENT — no pending field, no snapshot, no per-epoch keyed storage anywhere in src/client/ or src/core/",
+    "store_backend_interface": {
+      "type": "GenericKeyValueStore<T> — unified storage abstraction in src/utils/key-value.ts:6–17",
+      "methods": [
+        "getItem(key: string): Promise<T | null>",
+        "setItem(key: string, value: T): Promise<T>",
+        "removeItem(key: string): Promise<void>",
+        "clear(): Promise<void>",
+        "keys(): Promise<string[]>"
+      ],
+      "no_dedicated_group_state_backend": "MarmotGroupOptions.store is typed as GenericKeyValueStore<SerializedClientState> directly (marmot-group.ts:208)",
+      "best_domain_analog": "GroupRumorHistoryBackend at src/client/group/group-rumor-history.ts:14–21 — domain-specific named backend interface + class-over-backend pattern"
+    },
+    "key_file_paths": {
+      "primary_implementation_target": "src/client/group/marmot-group.ts:1–1609",
+      "serialization": "src/core/client-state.ts:76–103",
+      "sort_group_commits": "src/core/group-message.ts:266–278",
+      "store_interface": "src/utils/key-value.ts:6–17",
+      "reference_store_impl": "src/extra/in-memory-key-value-store.ts",
+      "backend_pattern_analog": "src/client/group/group-rumor-history.ts:14–41",
+      "fork_dead_end": "src/client/group/marmot-group.ts:1368–1376"
+    }
+  },
+  "architecture": {
+    "clientstate_type": {
+      "key_fields": {
+        "epoch": "groupContext.epoch: bigint",
+        "groupId": "groupContext.groupId: Uint8Array",
+        "exporterSecret": "keySchedule.exporterSecret: Uint8Array",
+        "ratchetTree": "ratchetTree: RatchetTree",
+        "historicalReceiverData": "historicalReceiverData: Map<bigint, EpochReceiverData> — already keyed per epoch, may hold past decryption data natively"
+      },
+      "serialization": "SerializedClientState = Uint8Array — raw TLS bytes via encode(clientStateEncoder, state) / decode(clientStateDecoder, bytes)",
+      "source": "src/core/client-state.ts:76–103"
+    },
+    "sort_group_commits_location": "src/core/group-message.ts:266–278 — comparator: created_at ascending, then id lexicographic ascending on tie",
+    "public_exports": {
+      "client_surface": "src/client/index.ts → src/client/group/index.ts → marmot-group.ts (everything re-exported automatically)",
+      "core_surface": "src/core/index.ts:1–17 — explicit named list",
+      "exports_snapshot_test": "src/__tests__/exports.test.ts — toMatchInlineSnapshot; only runtime values affect it, TypeScript interface/type additions do NOT"
+    },
+    "event_system_shape": {
+      "pattern": "EventEmitter<TEvents> from eventemitter3 where TEvents is a record<event-name, handler-signature>",
+      "rollback_addition": "Extend MarmotGroupEvents with rollback: (info: RollbackInfo) => void — additive, non-breaking"
+    },
+    "module_seams": {
+      "isBetterCandidate": "src/core/group-message.ts — beside sortGroupCommits, factored out as a named export",
+      "EpochSnapshot_and_RollbackInfo": "src/client/group/marmot-group.ts or sibling epoch-snapshot.ts — exported from ./client",
+      "EpochSnapshotStoreBackend": "src/client/group/ — named interface following GroupRumorHistoryBackend pattern",
+      "InMemoryEpochSnapshotStore": "src/extra/ — default in-memory implementation",
+      "MarmotGroupOptions_addition": "Add optional snapshots?: EpochSnapshotStoreBackend | EpochSnapshotStoreFactory field to MarmotGroupOptions (marmot-group.ts:203–223)"
+    }
+  },
+  "testing_and_conventions": {
+    "test_helper_inventory": {
+      "src/__tests__/helpers/mock-network.ts": "MockNetwork implements NostrNetworkInterface — shared in-memory events array; publish() appends and returns {ok:true}; request() filters array; subscription() synchronous match on subscribe; clear()"
+    },
+    "multi_member_test_pattern": {
+      "marmot_client_level": "setupTwoMemberGroup() in send-chat-message.test.ts:43–85 — PrivateKeyAccount.generateNew(), two MarmotClient instances sharing MockNetwork, invite→join flow",
+      "ts_mls_direct": "createTestGroupState(adminPubkey, ciphersuite) local factory in ingest-commit-race.test.ts:34–47; createCommit with add proposal; joinGroup with welcome; direct new MarmotGroup(state, options)"
+    },
+    "ingest_unit_test_pattern": {
+      "file": "src/__tests__/integration/ingest-commit-race.test.ts",
+      "past_epoch_skip": "line 282–286 — loser commit is skipped, only one epoch advance expected",
+      "ordering_test": "line 132–296 — reversed-order events, sortGroupCommits brings them into correct order",
+      "generator_drain": "for await (const res of group.ingest(events)) — collect by res.kind and res.result.kind"
+    },
+    "state_comparison_api": {
+      "epoch": "group.state.groupContext.epoch (bigint) — compared with ===",
+      "exporter_secret": "group.state.keySchedule.exporterSecret (Uint8Array) — not yet compared in tests; existing tests rely on decryption round-trip as convergence proof",
+      "no_helper_exists": "No dedicated state-comparison helper; tests compare fields directly or rely on decrypt success"
+    },
+    "property_testing_setup": "fast-check NOT installed; no property tests exist anywhere in src/; adding would require new devDependency",
+    "test_file_conventions": {
+      "integration": "src/__tests__/integration/<name>.test.ts",
+      "unit": "src/<module>/__tests__/<name>.test.ts",
+      "framework": "Vitest 3.x",
+      "run_one": "pnpm vitest run src/path/to/file.test.ts",
+      "auth_stub": "unsafeTestingAuthenticationService from ts-mls — used in all direct MarmotGroup unit tests"
+    },
+    "key_test_files": {
+      "primary_analog": "src/__tests__/integration/ingest-commit-race.test.ts — two competing commits, MIP-03 ordering; AC-1 test extends this file",
+      "two_client_pattern": "src/__tests__/integration/send-chat-message.test.ts — setupTwoMemberGroup, collector pattern",
+      "mock_network": "src/__tests__/helpers/mock-network.ts",
+      "in_memory_store": "src/extra/in-memory-key-value-store.ts",
+      "sort_commits_source": "src/core/group-message.ts:266–278"
+    }
+  }
+}

@@ -1,0 +1,139 @@
+{
+  "story_id": "S2",
+  "authored_by": "story-planner",
+  "authored_at": "2026-05-31T00:00:00.000Z",
+  "questions": [
+    {
+      "question_id": "VQ-S2-001",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-STRUCT-2",
+      "question": "Does `src/client/group/marmot-group.ts` export `RollbackInfo` with exactly these fields: `groupId: Uint8Array`, `targetEpoch: bigint`, `newHeadCommitEventId: string`, `invalidatedMessages: string[]`, and optional `messagesNeedingRefetch?: string[]`? Is `RollbackInfo` re-exported from `src/client/group/index.ts` and accessible via the `./client` subpath? Show (a) the type definition, (b) the index re-export line."
+    },
+    {
+      "question_id": "VQ-S2-002",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-STRUCT-6",
+      "question": "Does `src/core/group-message.ts` export named functions `isBetterCandidate(candidate: NostrEvent, applied: { eventId: string; createdAt: number }): boolean` and `isReplayOfApplied(candidate: NostrEvent, applied: { eventId: string; contentHash: Uint8Array }): boolean`? Does `sortGroupCommits` delegate to `isBetterCandidate` so there is a single MIP-03 comparator? Show (a) the function signatures, (b) the updated `sortGroupCommits` body."
+    },
+    {
+      "question_id": "VQ-S2-003",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-ROLL-1",
+      "question": "Is there an integration test in `src/__tests__/integration/ingest-commit-race.test.ts` that (a) constructs two `MarmotGroup` instances A and B at epoch N, (b) has both call `selfUpdate()`, (c) has both ingest both commits, and (d) asserts A and B share the same `groupContext.epoch`, the same `keySchedule.exporterSecret` byte-for-byte, and the same ratchet tree? Does a comment or test label confirm it would have failed on the pre-patch HEAD? Show the test body and its assertion section."
+    },
+    {
+      "question_id": "VQ-S2-004",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-ROLL-2",
+      "question": "Does the unit test for `isBetterCandidate` in `src/core/__tests__/group-message.test.ts` cover all four cases: (a) candidate wins on `created_at`, (b) candidate loses on `created_at`, (c) tie with candidate winning on `id` lexicographically, (d) tie with candidate losing on `id` lexicographically? Do all four assertions call `isBetterCandidate` directly (not via `sortGroupCommits`) and confirm the boolean result?"
+    },
+    {
+      "question_id": "VQ-S2-005",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-ROLL-3",
+      "question": "After the AC-ROLL-1 convergence scenario, does the integration test assert that the member whose commit lost the MIP-03 race holds `lastAppliedCommit` (or equivalent head field) equal to the winning commit's Nostr event id — not its own commit id? And can it be confirmed that the loser's final state is derivable only from the epoch-N snapshot plus the winner, not from its own commit?"
+    },
+    {
+      "question_id": "VQ-S2-006",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-ROLL-4",
+      "question": "Is there a unit test in `src/client/group/__tests__/rollback.test.ts` that calls `rollbackToEpoch` with a stored `EpochSnapshot` and asserts that `serializeClientState(group.state)` equals the snapshot's `state` bytes before re-applying the winning commit? Does the test confirm the snapshot round-trip is lossless (byte-for-byte equal)?"
+    },
+    {
+      "question_id": "VQ-S2-007",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-ROLL-5",
+      "question": "Does the integration test verify convergence under both delivery orderings — A ingests A-then-B while B ingests B-then-A — and confirm both members settle on the same winning commit id in both orderings? Show the two delivery-order permutation assertions."
+    },
+    {
+      "question_id": "VQ-S2-008",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-GUARD-1",
+      "question": "Does `isReplayOfApplied` return `true` when the candidate event has the same `id` as the applied commit's `eventId`, or when SHA-256 of its content matches `appliedCommit.contentHash`? And when `isReplayOfApplied` returns `true`, does `ingest()` yield `{ kind: \"skipped\", reason: \"self-echo-commit\" }` without modifying `this.state`, calling rollback, or emitting a `rollback` event? Show the unit test for both replay sub-cases."
+    },
+    {
+      "question_id": "VQ-S2-009",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-GUARD-2",
+      "question": "When a past-epoch commit arrives and `isBetterCandidate` returns `false` (candidate is deterministically worse than the already-applied commit), does `ingest()` yield `{ kind: \"skipped\", reason: \"lost-race\" }` without changing state or emitting a `rollback` event? Show the unit test that constructs a losing-race scenario and asserts the skip result."
+    },
+    {
+      "question_id": "VQ-S2-010",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-REG-1",
+      "question": "Is there an integration test in `src/__tests__/integration/ingest-commit-race.test.ts` for the single-committer case (one commit, no competition) that asserts: (a) `ingest()` produces the expected epoch advance, (b) no `rollback` event is emitted, and (c) `groupContext.epoch` equals `N + 1n`? Confirm the test did not require modification from the pre-epic state."
+    },
+    {
+      "question_id": "VQ-S2-011",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-REG-2",
+      "question": "Do all pre-existing integration tests in `src/__tests__/integration/` (end-to-end-invite-join-message, send-chat-message, welcome-grace-window) pass without modification after S2 is applied? Run `pnpm vitest run src/__tests__/integration/` and confirm all tests in those files pass with zero failures."
+    },
+    {
+      "question_id": "VQ-S2-012",
+      "phase": "pre-impl",
+      "category": "SPEC",
+      "ac_id": "AC-PROP-1",
+      "question": "Does `src/__tests__/integration/convergence-property.test.ts` use `fast-check` to generate a group of K ≥ 2 members, assign each a random self-update commit at the same epoch, deliver all commits in a random permutation, and assert that every permutation yields the same `groupContext.epoch`, byte-equal `exporter_secret`, and the same MIP-03-minimum winning commit? Is `fast-check` listed in `package.json` devDependencies?"
+    },
+    {
+      "question_id": "VQ-S2-013",
+      "phase": "pre-impl",
+      "category": "QUALITY",
+      "question": "Does `src/client/group/marmot-group.ts` after S2 contain no stub markers (`TODO`, `FIXME`, `XXX`) in the rollback decision tree, no unreachable branches, and no dead code introduced by replacing the past-epoch skip? Does `pnpm build` pass with zero TypeScript errors?"
+    },
+    {
+      "question_id": "VQ-S2-014",
+      "phase": "pre-impl",
+      "category": "ARCHITECTURE",
+      "question": "Does `rollbackToEpoch()` in `src/client/group/marmot-group.ts` go through the `this.state` setter (or set `this.#state` + dirty + emit manually) to preserve the `dirty` + `stateChanged` invariant, as required by architecture.md constraint #5? Show the `rollbackToEpoch` implementation and confirm no direct mutation of the private state field that bypasses the invariant."
+    },
+    {
+      "question_id": "VQ-S2-015",
+      "phase": "pre-impl",
+      "category": "ARCHITECTURE",
+      "question": "Could `marmot-group.ts`'s rollback logic (the `rollbackToEpoch` method and the past-epoch decision tree in `ingest()`) be deleted and rewritten without modifying any file outside `src/client/group/marmot-group.ts` and its declared imports (`epoch-snapshot.ts`, `src/core/group-message.ts`)? If cross-module side-effects exist, list each one and confirm it flows through a declared seam contract in architecture.md."
+    },
+    {
+      "question_id": "VQ-S2-016",
+      "phase": "pre-impl",
+      "category": "TEST",
+      "question": "Are the three guards in the rollback decision tree — (1) replay guard fires first, (2) lost-race skip fires second, (3) rollback fires only for winning-candidate past-epoch commits — each tested in isolation by a unit test that does not rely on the full MLS group machinery (i.e. the test does not spin up real ts-mls state just to verify the guard condition)?"
+    },
+    {
+      "question_id": "VQ-S2-017",
+      "phase": "pre-impl",
+      "category": "SECURITY",
+      "question": "Does `isReplayOfApplied` use a constant-time or otherwise safe comparison when matching the SHA-256 content hash (`contentHash`) — i.e. does it compare `Uint8Array` bytes in a manner that avoids short-circuit evaluation on mismatch that could leak timing information about the stored hash? If a standard byte-equality loop is used, confirm it iterates all bytes regardless of mismatch position."
+    },
+    {
+      "question_id": "VQ-S2-018",
+      "phase": "post-impl",
+      "category": "SCOPE",
+      "question": "The Codex review (P1) observed that delayed competing commits arriving in a SEPARATE ingest() call after epoch advance cannot be decrypted (they are encrypted with the old exporter_secret) and therefore never reach the rollback decision tree. The rollback path only fires when both commits arrive in the SAME ingest() batch (both decryptable at the current epoch). Is this limitation explicitly documented, and is it within the declared S2 scope boundary (S4 addresses cross-epoch decryption)?"
+    },
+    {
+      "question_id": "VQ-S2-019",
+      "phase": "post-impl",
+      "category": "TEST",
+      "question": "The AC-ROLL-5 test for delivery-ordering variant 2 reuses memberState1 from variant 1 rather than creating a truly independent group instance. Does this affect the test validity? Both variants use separate MarmotGroup instances initialized from the same memberState1, so the test correctly verifies both orderings produce the same result."
+    },
+    {
+      "question_id": "VQ-S2-020",
+      "phase": "post-impl",
+      "category": "REVIEW",
+      "note": "REVIEW SKIPPED: ollama unavailable (lead-authorized). Codex review ran; P1 (delayed delivery limitation) is an S4 concern per spec scope; P2 (Prettier formatting) was fixed."
+    }
+  ]
+}

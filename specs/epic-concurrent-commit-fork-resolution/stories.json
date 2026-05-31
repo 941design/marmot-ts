@@ -1,0 +1,262 @@
+{
+  "epic_name": "concurrent-commit-fork-resolution",
+  "created_at": "2026-05-31T00:00:00.000Z",
+  "total_stories": 4,
+  "story_order": ["S1", "S2", "S3", "S4"],
+  "dependency_notes": "S1 must land first — it creates EpochSnapshotStoreBackend and wires snapshot-on-advance into MarmotGroup, which every subsequent story depends on. S2 depends on S1 (rollback requires stored snapshots to exist). S3 depends on S2 (invalidation and the rollback event require the rollback path to fire). S4 depends only on S1 (past-epoch decryption uses snapshot key material but does not require the rollback path; it can be implemented independently after S1).",
+  "mock_resolution_plan": "No temporary mocks introduced. All cross-story seams are satisfied by production artifacts: S1 provides EpochSnapshotStoreBackend before S2 consumes it; S2 provides the rollback path before S3 emits the event.",
+  "seams": [
+    {
+      "data": "EpochSnapshotStoreBackend — snapshot storage seam between MarmotGroup and snapshot persistence",
+      "contract": {
+        "type_name": "EpochSnapshotStoreBackend",
+        "fields": [
+          {
+            "name": "get",
+            "type": "(groupIdHex: string, epoch: bigint) => Promise<EpochSnapshot | null>"
+          },
+          {
+            "name": "set",
+            "type": "(groupIdHex: string, epoch: bigint, snapshot: EpochSnapshot) => Promise<void>"
+          },
+          {
+            "name": "prune",
+            "type": "(groupIdHex: string, keepAboveEpoch: bigint) => Promise<void>"
+          },
+          {
+            "name": "clear",
+            "type": "(groupIdHex: string) => Promise<void>"
+          }
+        ],
+        "invariants": [
+          "get(id, epoch) returns null when no snapshot has been set for that (id, epoch) pair",
+          "set then get for the same (id, epoch) returns the stored snapshot byte-for-byte",
+          "prune(id, keepAboveEpoch) removes all entries where epoch <= keepAboveEpoch",
+          "clear(id) removes all snapshots for that group id"
+        ]
+      },
+      "source": {
+        "story": "S1",
+        "artifact": "src/client/group/epoch-snapshot.ts"
+      },
+      "destination": {
+        "story": "S2",
+        "artifact": "src/client/group/marmot-group.ts"
+      }
+    },
+    {
+      "data": "isBetterCandidate / isReplayOfApplied — MIP-03 comparator seam between sort and rollback",
+      "contract": {
+        "type_name": "MIP03Comparators",
+        "fields": [
+          {
+            "name": "isBetterCandidate",
+            "type": "(candidate: NostrEvent, applied: { eventId: string; createdAt: number }) => boolean"
+          },
+          {
+            "name": "isReplayOfApplied",
+            "type": "(candidate: NostrEvent, applied: { eventId: string; contentHash: Uint8Array }) => boolean"
+          }
+        ],
+        "invariants": [
+          "isBetterCandidate returns true iff candidate.created_at < applied.createdAt, or they are equal and candidate.id < applied.eventId lexicographically",
+          "isReplayOfApplied returns true when candidate.id === applied.eventId or SHA-256(candidate.content) equals applied.contentHash",
+          "sortGroupCommits delegates to isBetterCandidate so both callers share one implementation"
+        ]
+      },
+      "source": {
+        "story": "S2",
+        "artifact": "src/core/group-message.ts"
+      },
+      "destination": {
+        "story": "S2",
+        "artifact": "src/client/group/marmot-group.ts"
+      }
+    },
+    {
+      "data": "RollbackInfo — payload emitted from rollback path to the consumer event surface",
+      "contract": {
+        "type_name": "RollbackInfo",
+        "fields": [
+          {
+            "name": "groupId",
+            "type": "Uint8Array"
+          },
+          {
+            "name": "targetEpoch",
+            "type": "bigint"
+          },
+          {
+            "name": "newHeadCommitEventId",
+            "type": "string"
+          },
+          {
+            "name": "invalidatedMessages",
+            "type": "string[]"
+          },
+          {
+            "name": "messagesNeedingRefetch",
+            "type": "string[]",
+            "optional": true
+          }
+        ],
+        "invariants": [
+          "targetEpoch equals the epoch of the snapshot restored (the pre-losing-commit epoch)",
+          "newHeadCommitEventId equals the Nostr event id of the winning commit applied after rollback",
+          "invalidatedMessages contains the event ids of all application messages decrypted under the losing epoch",
+          "emitted exactly once per rollback; never emitted when no rollback occurs"
+        ]
+      },
+      "source": {
+        "story": "S2",
+        "artifact": "src/client/group/marmot-group.ts"
+      },
+      "destination": {
+        "story": "S3",
+        "artifact": "src/client/group/marmot-group.ts"
+      }
+    }
+  ],
+  "stories": [
+    {
+      "id": "S1",
+      "name": "epoch-snapshot-store-and-pending-commit",
+      "title": "Epoch snapshot store and pending-commit discipline",
+      "description": "Creates the epoch snapshot storage infrastructure (EpochSnapshot type, EpochSnapshotStoreBackend interface, InMemoryEpochSnapshotStore implementation) and wires it into MarmotGroup. Every commit advance in ingest(), selfUpdate(), and commit() takes a snapshot of the pre-advance state before mutating; publish failure clears the pending commit cleanly with no orphan snapshot. This is the foundation that Stories 2, 3, and 4 all depend on.",
+      "owning_module": "epoch-snapshot.ts",
+      "status": "done",
+      "complexity": "high",
+      "lighter_path": false,
+      "creates_seam": true,
+      "consumes_seams": [],
+      "acceptance_criteria": [
+        "AC-STRUCT-1",
+        "AC-STRUCT-3",
+        "AC-STRUCT-5",
+        "AC-SNAP-1",
+        "AC-SNAP-2",
+        "AC-SNAP-3",
+        "AC-RET-1",
+        "AC-RET-2"
+      ],
+      "scope": {
+        "includes": [
+          "src/client/group/epoch-snapshot.ts (new file — exports EpochSnapshot, EpochSnapshotStoreBackend, EpochSnapshotStoreFactory)",
+          "src/extra/in-memory-epoch-snapshot-store.ts (new file — exports InMemoryEpochSnapshotStore)",
+          "src/client/group/marmot-group.ts (add snapshots option to MarmotGroupOptions; take snapshot in ingest() before processMessage(); take snapshot in selfUpdate()/commit() before this.state advance; implement clearPendingCommit; hard-fail if snapshot unavailable; prune with snapshotDepth = 2 default)",
+          "src/client/group/index.ts (re-export EpochSnapshot, EpochSnapshotStoreBackend, EpochSnapshotStoreFactory)",
+          "src/extra/index.ts (re-export InMemoryEpochSnapshotStore)"
+        ],
+        "excludes": [
+          "src/core/group-message.ts (isBetterCandidate / isReplayOfApplied factoring belongs to S2)",
+          "Rollback path in ingest() past-epoch branch (belongs to S2)",
+          "rollback event and RollbackInfo type (belongs to S2/S3)",
+          "Past-epoch decryption window (belongs to S4)"
+        ]
+      },
+      "notes": "snapshotDepth defaults to 2 per architecture.md decision §2. SHA-256 content hash must be computed at snapshot time (stored in appliedCommit.contentHash). SerializedClientState is raw Uint8Array — no JSON wrapping. All imports use .js extension (NodeNext requirement). The exports.test.ts inline snapshot must be updated to include InMemoryEpochSnapshotStore once it is exported from src/extra/index.ts."
+    },
+    {
+      "id": "S2",
+      "name": "mip03-rollback-path",
+      "title": "MIP-03 rollback path replacing the past-epoch skip",
+      "description": "Replaces the dead-end past-epoch skip in ingest() with the MIP-03 convergence logic: factor isBetterCandidate and isReplayOfApplied as named exports of group-message.ts so sortGroupCommits and the rollback path share one comparator, then implement rollbackToEpoch() and the full decision tree (replay guard → lost-race skip → rollback + re-apply). Includes the AC-ROLL-1 convergence integration test (the core regression test that fails on HEAD and passes patched) and the fast-check property test (fast-check must be added to devDependencies).",
+      "owning_module": "marmot-group.ts",
+      "status": "done",
+      "complexity": "high",
+      "lighter_path": false,
+      "creates_seam": true,
+      "consumes_seams": ["EpochSnapshotStoreBackend"],
+      "acceptance_criteria": [
+        "AC-STRUCT-2",
+        "AC-STRUCT-6",
+        "AC-ROLL-1",
+        "AC-ROLL-2",
+        "AC-ROLL-3",
+        "AC-ROLL-4",
+        "AC-ROLL-5",
+        "AC-GUARD-1",
+        "AC-GUARD-2",
+        "AC-REG-1",
+        "AC-REG-2",
+        "AC-PROP-1"
+      ],
+      "scope": {
+        "includes": [
+          "src/core/group-message.ts (factor isBetterCandidate and isReplayOfApplied as named exports; sortGroupCommits delegates to isBetterCandidate)",
+          "src/client/group/marmot-group.ts (add RollbackInfo type export; replace past-epoch skip with rollback decision tree; add private #rollbackToEpoch() method)",
+          "src/__tests__/integration/ingest-commit-race.test.ts (add AC-ROLL-1 / AC-ROLL-5 convergence tests; AC-REG-1 single-committer regression)",
+          "src/core/__tests__/group-message.test.ts (new or existing — unit tests for isBetterCandidate all four cases; isReplayOfApplied id/content-hash guard)",
+          "src/client/group/__tests__/rollback.test.ts (new file — AC-ROLL-4 rollbackToEpoch byte-for-byte test; AC-GUARD-1 / AC-GUARD-2 skip-reason tests; AC-STRUCT-2 RollbackInfo shape)",
+          "src/__tests__/integration/convergence-property.test.ts (new file — AC-PROP-1 fast-check property test)",
+          "package.json (add fast-check as devDependency)"
+        ],
+        "excludes": [
+          "Rollback event emission (MarmotGroupEvents.rollback belongs to S3)",
+          "Message invalidation / retry bookkeeping (belongs to S3)",
+          "Past-epoch decryption window (belongs to S4)",
+          "snapshot store infrastructure (belongs to S1)"
+        ]
+      },
+      "notes": "fast-check is NOT installed (architecture.md constraint #10). The implementer must run `pnpm add -D fast-check` before writing the property test. The exports.test.ts inline snapshot may need updating if isBetterCandidate / isReplayOfApplied are new runtime exports from src/core/group-message.ts — verify against the existing snapshot. rollbackToEpoch must go through the this.state setter (or manually set #state + dirty + emit) to preserve the dirty/stateChanged invariant per architecture.md constraint #5."
+    },
+    {
+      "id": "S3",
+      "name": "post-rollback-invalidation-and-event",
+      "title": "Post-rollback message invalidation and rollback event",
+      "description": "After a rollback, MarmotGroup tracks which application messages were decrypted under the losing epoch, marks them as invalidated, re-queues previously unreadable events for retry under the winner's epoch keys, and emits a typed rollback event on the MarmotGroupEvents surface. The library signals but does not auto-replay the consumer's own change — that is the app's responsibility per MIP-03 / MDK division of labor.",
+      "owning_module": "marmot-group.ts",
+      "status": "done",
+      "complexity": "medium",
+      "lighter_path": false,
+      "creates_seam": false,
+      "consumes_seams": ["EpochSnapshotStoreBackend", "RollbackInfo"],
+      "acceptance_criteria": [
+        "AC-STRUCT-4",
+        "AC-MSG-1",
+        "AC-MSG-2",
+        "AC-EVT-1",
+        "AC-EVT-2"
+      ],
+      "scope": {
+        "includes": [
+          "src/client/group/marmot-group.ts (extend MarmotGroupEvents with rollback: (info: RollbackInfo) => void; track decrypted messages per epoch during ingest(); after rollbackToEpoch() populate RollbackInfo.invalidatedMessages; re-queue unreadable events for retry; emit rollback event)",
+          "src/__tests__/integration/ingest-commit-race.test.ts (add AC-MSG-1 / AC-MSG-2 invalidation+retry assertions to convergence test; AC-EVT-1 rollback event spy; AC-EVT-2 no-event single-committer assertion)"
+        ],
+        "excludes": [
+          "Past-epoch decryption window (belongs to S4)",
+          "Auto-replay of consumer's own change (app responsibility, not library)",
+          "EpochSnapshotStoreBackend changes (owned by S1)",
+          "isBetterCandidate / isReplayOfApplied (owned by S2)"
+        ]
+      },
+      "notes": "MarmotGroupEvents is an EventEmitter-style interface. The rollback event MUST compile without TypeScript error for group.on('rollback', handler). The message invalidation bookkeeping needs a per-ingest() pass record of messages decrypted under the in-progress epoch so they can be identified as from the losing epoch if a rollback fires partway through."
+    },
+    {
+      "id": "S4",
+      "name": "bounded-past-epoch-decryption-window",
+      "title": "Bounded past-epoch decryption window for lagging members",
+      "description": "Retains the last pastEpochDepth (default 5, MDK parity) epochs' message-decryption key material so a lagging member can decrypt recent application messages without triggering a full rollback. Adds the pastEpochDepth option to MarmotGroupOptions; modifies the Step 1 decrypt path in ingest() to try past-epoch keys before marking a message unreadable; bounds the window for forward secrecy.",
+      "owning_module": "marmot-group.ts",
+      "status": "done",
+      "complexity": "medium",
+      "lighter_path": false,
+      "creates_seam": false,
+      "consumes_seams": ["EpochSnapshotStoreBackend"],
+      "acceptance_criteria": ["AC-PAST-1", "AC-PAST-2"],
+      "scope": {
+        "includes": [
+          "src/client/group/marmot-group.ts (add pastEpochDepth option to MarmotGroupOptions with default 5; in ingest() Step 1 decrypt path, on initial decrypt failure try retained past-epoch key material within pastEpochDepth before marking unreadable; no rollback triggered for past-epoch-window successes)",
+          "src/client/group/__tests__/past-epoch-decrypt.test.ts (new file — AC-PAST-1 member-one-epoch-behind integration test; AC-PAST-2 beyond-window boundary unit test)"
+        ],
+        "excludes": [
+          "Rollback path (belongs to S2)",
+          "Rollback event emission (belongs to S3)",
+          "Snapshot store infrastructure (belongs to S1)",
+          "snapshotDepth pruning (belongs to S1)"
+        ]
+      },
+      "notes": "pastEpochDepth = 5 default per architecture.md design decision §4. This is independent of the rollback path — lagging-member decrypt is a separate code path in ingest() Step 1 that tries multiple prior epoch keys on failure, not a rollback. Key material retention strategy must respect forward secrecy: only retain what is needed for the window, prune on advance."
+    }
+  ]
+}

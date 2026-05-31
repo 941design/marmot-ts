@@ -1,0 +1,42 @@
+{
+  "story_id": "S4",
+  "status": "done",
+  "final_outcome": "accepted",
+  "completed_at": "2026-05-31T00:00:00.000Z",
+  "files_created": [
+    "src/client/group/__tests__/past-epoch-decrypt.test.ts",
+    "specs/epic-concurrent-commit-fork-resolution/S4-bounded-past-epoch-decryption-window/architecture.json",
+    "specs/epic-concurrent-commit-fork-resolution/S4-bounded-past-epoch-decryption-window/baseline.json",
+    "specs/epic-concurrent-commit-fork-resolution/S4-bounded-past-epoch-decryption-window/result.json",
+    "specs/epic-concurrent-commit-fork-resolution/S4-bounded-past-epoch-decryption-window/verification.json"
+  ],
+  "files_modified": [
+    "src/core/group-message.ts",
+    "src/client/group/marmot-group.ts",
+    "src/__tests__/exports.test.ts"
+  ],
+  "tests_added": {
+    "integration": 5
+  },
+  "test_counts": {
+    "baseline": 475,
+    "final": 480
+  },
+  "mocks": [],
+  "remediation_rounds": 0,
+  "retrospective": {
+    "skipped": false,
+    "harder_than_needed": "Discovering that ts-mls uses two separate encryption layers (outer ChaCha20-Poly1305 via exporter_secret, inner MLS PrivateMessage via historicalReceiverData) required careful analysis before any implementation began. The story instructions correctly flagged ts-mls's native `historicalReceiverData` support but the outer NIP-44 layer also rotates per epoch, meaning ts-mls's native support covers only the inner half. This two-layer design was not immediately obvious from the type signatures alone.",
+    "surprised_by": "Test failures initially caused by `advanceNEpochs` creating internally-inconsistent state: the helper created commits from `adminState` to produce epoch states, but then the test loop created DIFFERENT commits from those same epoch states. The two independent commit streams diverged the ratchet tree, making the member unable to process epoch N+1 commits with its epoch N state. The fix was a single `buildGroupAtEpoch` helper that advances admin and member in lockstep, which also simplified the tests substantially.",
+    "scope": "project_specific",
+    "outcome": "merged",
+    "commits_made": [],
+    "absorbed_from": [],
+    "lead_clarifications": [
+      {
+        "question": "Examiner VQ-S4-010 (sev 3): destroy() did not zero the past-epoch exporter-secret ring on teardown, though eviction zeroes.",
+        "answer": "Lead added ring zeroing (key.fill(0)) + clear() to destroy(), mirroring the eviction pattern. Forward-secrecy hygiene on group teardown. 480 tests pass; build clean."
+      }
+    ]
+  }
+}

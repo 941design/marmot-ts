@@ -11,6 +11,7 @@ import { EventEmitter } from "eventemitter3";
 import {
   acceptAll,
   CiphersuiteImpl,
+  type ClientConfig,
   ClientState,
   contentTypes,
   createApplicationMessage,
@@ -19,10 +20,15 @@ import {
   createProposal,
   CryptoProvider,
   defaultCryptoProvider,
+  defaultKeyPackageEqualityConfig,
+  defaultKeyRetentionConfig,
+  defaultLifetimeConfig,
+  defaultPaddingConfig,
   defaultProposalTypes,
   getCredentialFromLeafIndex,
   type IncomingMessageCallback,
   type LeafIndex,
+  type MlsFramedMessage,
   MlsMessage,
   processMessage,
   type ProcessMessageResult,
@@ -33,6 +39,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 
 import { marmotAuthService } from "../../core/auth-service.js";
 import {
+  deserializeClientState,
   getMarmotGroupData,
   serializeClientState,
 } from "../../core/client-state.js";
@@ -41,8 +48,12 @@ import {
   createGroupEvent,
   decryptGroupMessages,
   GroupMessagePair,
+  isBetterCandidate,
+  isReplayOfApplied,
+  mlsCommitContentHash,
   serializeApplicationRumor,
   sortGroupCommits,
+  tryDecryptGroupMessageEventWithExporterSecret,
 } from "../../core/group-message.js";
 import { getKeyPackage } from "../../core/key-package-event.js";
 import {
@@ -63,6 +74,11 @@ import { logger } from "../../utils/debug.js";
 import type { GenericKeyValueStore } from "../../utils/key-value.js";
 import type { SerializedClientState } from "../../core/client-state.js";
 import { createGiftWrap, hasAck } from "../../utils/index.js";
+import type {
+  EpochSnapshotStoreBackend,
+  EpochSnapshotStoreFactory,
+} from "./epoch-snapshot.js";
+import { InMemoryEpochSnapshotStore } from "../../extra/in-memory-epoch-snapshot-store.js";
 import { unixNow } from "../../utils/nostr.js";
 import { NostrNetworkInterface, PublishResponse } from "../nostr-interface.js";
 import { proposeInviteUser } from "./proposals/invite-user.js";
@@ -117,12 +133,38 @@ export type SkippedIngestResult = {
   message: MlsMessage;
   /**
    * Why the event was skipped:
-   * - `"past-epoch"` – commit belongs to an epoch we have already advanced past
+   * - `"past-epoch"` – commit belongs to an epoch we have already advanced past (no snapshot)
    * - `"wrong-wireformat"` – the MLS wireformat is unexpected for a group message
    * - `"self-echo"` – this event was sent by us; state was already advanced at send time
+   * - `"self-echo-commit"` – re-delivery of the exact commit already applied (id or content-hash match)
+   * - `"lost-race"` – competing commit is deterministically worse per MIP-03; current winner is kept
    */
-  reason: "past-epoch" | "wrong-wireformat" | "self-echo";
+  reason:
+    | "past-epoch"
+    | "wrong-wireformat"
+    | "self-echo"
+    | "self-echo-commit"
+    | "lost-race";
 };
+
+/**
+ * Describes a completed rollback to a prior epoch (MIP-03 fork resolution).
+ *
+ * `invalidatedMessages` and `messagesNeedingRefetch` are populated in S3.
+ * S2 emits `RollbackInfo` with empty arrays for both fields.
+ */
+export interface RollbackInfo {
+  /** The MLS group ID bytes. */
+  groupId: Uint8Array;
+  /** The epoch this rollback returned to. */
+  targetEpoch: bigint;
+  /** Nostr event ID of the winning commit that was re-applied. */
+  newHeadCommitEventId: string;
+  /** Event IDs of application messages invalidated by the rollback (populated in S3). */
+  invalidatedMessages: string[];
+  /** Event IDs of messages that need re-fetching after the rollback (populated in S3). */
+  messagesNeedingRefetch?: string[];
+}
 
 /** An event that could not be decrypted or processed after all retry attempts */
 export type UnreadableIngestResult = {
@@ -220,6 +262,27 @@ export type MarmotGroupOptions<
    * not provided.
    */
   media?: TMedia | GroupMediaFactory<TMedia>;
+  /**
+   * Epoch snapshot store backend or factory.  When omitted, an in-memory
+   * store is created automatically.  Used to retain pre-apply serialized
+   * state for rollback and fork-resolution (see S2).
+   */
+  snapshots?: EpochSnapshotStoreBackend | EpochSnapshotStoreFactory;
+  /**
+   * Number of past epochs to retain in the snapshot store.  Older snapshots
+   * are pruned on each state advance.  Defaults to `2`.
+   */
+  snapshotDepth?: number;
+  /**
+   * Number of past epochs whose outer encryption key material (exporter_secret)
+   * to retain for lagging-member decryption.  A member that has advanced
+   * `pastEpochDepth` or fewer epochs beyond an application message's epoch can
+   * still decrypt it without triggering a rollback.
+   *
+   * Kept strictly bounded for forward secrecy: key material outside the window
+   * is zeroed and removed on each epoch advance.  Defaults to `5` (MDK parity).
+   */
+  pastEpochDepth?: number;
 };
 
 /** Information about a welcome recipient */
@@ -305,6 +368,8 @@ export type MarmotGroupEvents<
   destroyed: (group: MarmotGroup<THistory, TMedia>) => void;
   /** Emitted when history persistence fails (best-effort, non-blocking) */
   historyError: (error: Error) => void;
+  /** Emitted after a MIP-03 rollback completes and the winning commit is applied */
+  rollback: (info: RollbackInfo) => void;
 };
 
 /**
@@ -340,6 +405,27 @@ export class MarmotGroup<
   #state: ClientState;
   #groupData: MarmotGroupData | null = null;
 
+  /** Epoch snapshot store backend */
+  #snapshots: EpochSnapshotStoreBackend;
+  /** Number of past epochs to retain in the snapshot store */
+  #snapshotDepth: number;
+
+  /**
+   * Bounded ring of past epochs' outer encryption key material (exporter_secret),
+   * keyed by epoch.  Used by the past-epoch decryption window to retry outer
+   * ChaCha20-Poly1305 decryption against retained past-epoch keys (AC-PAST-1).
+   * Pruned to `#pastEpochDepth` on each state advance for forward secrecy (AC-PAST-2).
+   */
+  readonly #pastEpochExporterSecrets = new Map<bigint, Uint8Array>();
+  /** Number of past epochs whose exporter_secret to retain. Defaults to 5. */
+  #pastEpochDepth: number;
+  /**
+   * ts-mls ClientConfig configured with `retainKeysForEpochs = #pastEpochDepth`
+   * so that ts-mls also retains inner MLS-layer historicalReceiverData for the
+   * same window depth.
+   */
+  #mlsClientConfig: ClientConfig;
+
   /**
    * Event IDs of application messages we sent ourselves, used to skip self-echoes in ingest()
    * NOTE: this is not persisted at the moment, its only in memory and used to skip self-echoes in ingest()
@@ -348,6 +434,63 @@ export class MarmotGroup<
 
   /** In-flight media decrypts keyed by plaintext SHA-256 hex. */
   readonly #decryptingMedia = new Map<string, Promise<StoredMedia>>();
+
+  /**
+   * Tracks application message event IDs by the epoch under which they were
+   * decrypted. Used by the rollback path to identify invalidated messages.
+   * Entries for epochs > rollback target are moved to RollbackInfo.invalidatedMessages
+   * and removed from this map when a rollback occurs.
+   */
+  readonly #messagesByEpoch = new Map<bigint, string[]>();
+
+  /**
+   * Prune dead per-epoch message-tracking entries. A message can only be
+   * invalidated by a rollback, and a rollback can only reach epochs for which
+   * a snapshot still exists. Snapshots are pruned to `snapshotDepth`, so any
+   * entry for an epoch at or below `keepAtOrBelowEpoch` (the same floor passed
+   * to `#snapshots.prune`) can never be rolled back to again and is dead. This
+   * keeps `#messagesByEpoch` bounded by `snapshotDepth` rather than growing one
+   * entry per epoch for the lifetime of the group.
+   */
+  #pruneMessagesByEpoch(keepAtOrBelowEpoch: bigint): void {
+    for (const ep of this.#messagesByEpoch.keys()) {
+      if (ep <= keepAtOrBelowEpoch) {
+        this.#messagesByEpoch.delete(ep);
+      }
+    }
+  }
+
+  /**
+   * Records the current epoch's exporter_secret in the past-epoch ring, then
+   * prunes entries that fall outside `#pastEpochDepth`.  Call this immediately
+   * BEFORE advancing `this.state` to a new epoch so that the CURRENT epoch's key
+   * is available for lagging-member decryption after the advance.
+   *
+   * Key material for epochs outside the window is actively zeroed (forward secrecy).
+   */
+  #recordAndPruneExporterSecret(epoch: bigint, secret: Uint8Array): void {
+    // Store a copy — the caller's Uint8Array may be mutated by ts-mls zero-out.
+    this.#pastEpochExporterSecrets.set(epoch, secret.slice());
+
+    // Prune: keep only the `#pastEpochDepth` most-recent epochs.
+    if (this.#pastEpochExporterSecrets.size > this.#pastEpochDepth) {
+      const sortedEpochs = [...this.#pastEpochExporterSecrets.keys()].sort(
+        (a, b) => (a < b ? -1 : 1),
+      );
+      const toPrune = sortedEpochs.slice(
+        0,
+        sortedEpochs.length - this.#pastEpochDepth,
+      );
+      for (const ep of toPrune) {
+        const key = this.#pastEpochExporterSecrets.get(ep);
+        if (key) {
+          // Zero out the bytes before removing (forward secrecy).
+          key.fill(0);
+        }
+        this.#pastEpochExporterSecrets.delete(ep);
+      }
+    }
+  }
 
   get id() {
     return this.state.groupContext.groupId;
@@ -426,6 +569,29 @@ export class MarmotGroup<
     // Set useful fields
     this.idStr = bytesToHex(this.id);
 
+    // Initialize snapshot store
+    this.#snapshotDepth = options.snapshotDepth ?? 2;
+    const snapshotsOpt = options.snapshots;
+    if (!snapshotsOpt) {
+      this.#snapshots = new InMemoryEpochSnapshotStore();
+    } else if (typeof snapshotsOpt === "function") {
+      this.#snapshots = snapshotsOpt(state.groupContext.groupId);
+    } else {
+      this.#snapshots = snapshotsOpt;
+    }
+
+    // Initialize past-epoch decryption window (AC-PAST-1, AC-PAST-2).
+    this.#pastEpochDepth = options.pastEpochDepth ?? 5;
+    this.#mlsClientConfig = {
+      keyRetentionConfig: {
+        ...defaultKeyRetentionConfig,
+        retainKeysForEpochs: this.#pastEpochDepth,
+      },
+      lifetimeConfig: defaultLifetimeConfig,
+      keyPackageEqualityConfig: defaultKeyPackageEqualityConfig,
+      paddingConfig: defaultPaddingConfig,
+    };
+
     this.log = logger.extend(`group:${this.idStr.slice(0, 8)}`);
   }
 
@@ -483,10 +649,15 @@ export class MarmotGroup<
 
     // Create a commit with explicitly empty proposals. In ts-mls, this results in
     // a self-update commit that includes an UpdatePath (rotating leaf secrets).
+    // Pass clientConfig so the inner-layer historicalReceiverData retention
+    // matches pastEpochDepth — otherwise ts-mls's default (4) leaves locally
+    // authored epoch advances with an outer exporter secret retained for 5
+    // epochs but no inner receiver data for the fifth (AC-PAST-1).
     const { commit, newState } = await createCommit({
       context: {
         cipherSuite: this.ciphersuite,
         authService: marmotAuthService,
+        clientConfig: this.#mlsClientConfig,
       },
       state: this.state,
       wireAsPublicMessage: false,
@@ -505,9 +676,46 @@ export class MarmotGroup<
       throw new Error("Failed to publish commit event: no relay acknowledged");
     }
 
+    // Snapshot pre-advance state (AC-SNAP-2).
+    // Best-effort: a backend rejection must not abort an already-ACKed advance.
+    const selfUpdateGroupIdHex = bytesToHex(this.id);
+    const selfUpdateEpoch = this.state.groupContext.epoch;
+    try {
+      await this.#snapshots.set(selfUpdateGroupIdHex, selfUpdateEpoch, {
+        groupId: this.id,
+        epoch: selfUpdateEpoch,
+        state: serializeClientState(this.state),
+        appliedCommit: {
+          eventId: commitEvent.id,
+          createdAt: commitEvent.created_at,
+          contentHash: mlsCommitContentHash(commit),
+        },
+      });
+    } catch (snapErr) {
+      this.log("snapshot set failed (non-fatal): %O", snapErr);
+    }
+
+    // Record the current epoch's exporter_secret before advancing (AC-PAST-1).
+    this.#recordAndPruneExporterSecret(
+      selfUpdateEpoch,
+      this.state.keySchedule.exporterSecret,
+    );
+
     // Advance local state after publish.
     this.state = newState;
     await this.save();
+
+    // Prune old snapshots (AC-RET-1).  Best-effort: prune is cleanup only.
+    try {
+      await this.#snapshots.prune(
+        selfUpdateGroupIdHex,
+        selfUpdateEpoch - BigInt(this.#snapshotDepth),
+      );
+    } catch (pruneErr) {
+      this.log("snapshot prune failed (non-fatal): %O", pruneErr);
+    }
+    // Keep per-epoch message tracking bounded alongside snapshot retention.
+    this.#pruneMessagesByEpoch(selfUpdateEpoch - BigInt(this.#snapshotDepth));
 
     return response;
   }
@@ -694,6 +902,14 @@ export class MarmotGroup<
     // "desired gen in the past").
     this.#sentEventIds.add(applicationEvent.id);
 
+    // Track the message under the epoch it was sent at, so that if a later
+    // rollback discards this branch the locally-sent message is reported in
+    // RollbackInfo.invalidatedMessages alongside received ones (AC-MSG-1).
+    const sentEpoch = this.state.groupContext.epoch;
+    const sentEpochMsgs = this.#messagesByEpoch.get(sentEpoch) ?? [];
+    sentEpochMsgs.push(applicationEvent.id);
+    this.#messagesByEpoch.set(sentEpoch, sentEpochMsgs);
+
     // Save to history immediately so the sender sees their own message without
     // waiting for the relay echo to arrive and be ingested.
     if (this.history) {
@@ -857,11 +1073,14 @@ export class MarmotGroup<
     }
 
     // Create the commit
-    // In v2, createCommit takes a single params object with context
+    // In v2, createCommit takes a single params object with context.
+    // Pass clientConfig so inner-layer past-epoch retention matches
+    // pastEpochDepth (see selfUpdate for the same rationale).
     const { commit, newState, welcome } = await createCommit({
       context: {
         cipherSuite: this.ciphersuite,
         authService: marmotAuthService,
+        clientConfig: this.#mlsClientConfig,
       },
       state: this.state,
       ...commitOptions,
@@ -893,11 +1112,48 @@ export class MarmotGroup<
       );
     }
 
+    // Snapshot pre-advance state (AC-SNAP-2).
+    // Best-effort: a backend rejection must not abort an already-ACKed commit.
+    const commitGroupIdHex = bytesToHex(this.id);
+    const commitEpochBefore = this.state.groupContext.epoch;
+    try {
+      await this.#snapshots.set(commitGroupIdHex, commitEpochBefore, {
+        groupId: this.id,
+        epoch: commitEpochBefore,
+        state: serializeClientState(this.state),
+        appliedCommit: {
+          eventId: commitEvent.id,
+          createdAt: commitEvent.created_at,
+          contentHash: mlsCommitContentHash(commit),
+        },
+      });
+    } catch (snapErr) {
+      this.log("snapshot set failed (non-fatal): %O", snapErr);
+    }
+
+    // Record the current epoch's exporter_secret before advancing (AC-PAST-1).
+    this.#recordAndPruneExporterSecret(
+      commitEpochBefore,
+      this.state.keySchedule.exporterSecret,
+    );
+
     // Update the group state after successful publish
     this.state = newState;
 
     // Persist local-authoritative epoch transition immediately.
     await this.save();
+
+    // Prune old snapshots (AC-RET-1).  Best-effort: prune is cleanup only.
+    try {
+      await this.#snapshots.prune(
+        commitGroupIdHex,
+        commitEpochBefore - BigInt(this.#snapshotDepth),
+      );
+    } catch (pruneErr) {
+      this.log("snapshot prune failed (non-fatal): %O", pruneErr);
+    }
+    // Keep per-epoch message tracking bounded alongside snapshot retention.
+    this.#pruneMessagesByEpoch(commitEpochBefore - BigInt(this.#snapshotDepth));
 
     // If new users were added, send welcome events
     // The commit has been published and acked, so it's safe to send Welcomes now (MIP-02 compliance)
@@ -1076,15 +1332,25 @@ export class MarmotGroup<
    *
    * @returns An IncomingMessageCallback that enforces admin verification
    */
-  private createAdminVerificationCallback(): IncomingMessageCallback {
-    const groupData = this.groupData;
+  /**
+   * Build an admin-verification callback bound to a SPECIFIC state. The
+   * callback resolves the committing leaf against `state.ratchetTree` and
+   * checks it against that state's admin set. Commit application advances the
+   * epoch and rotates the tree, and the rollback path validates against a
+   * past-epoch snapshot — so the callback MUST be derived from the exact state
+   * the commit is processed against, never a stale this.state captured earlier.
+   */
+  private createAdminVerificationCallbackForState(
+    state: ClientState,
+  ): IncomingMessageCallback {
+    const groupData = getMarmotGroupData(state);
     if (!groupData) {
       // If no group data, we can't verify - accept all (shouldn't happen in normal flow)
       return acceptAll;
     }
 
     return createAdminCommitPolicyCallback({
-      ratchetTree: this.state.ratchetTree,
+      ratchetTree: state.ratchetTree,
       adminPubkeys: groupData.adminPubkeys,
       onUnverifiableCommit: "retry",
     });
@@ -1195,9 +1461,193 @@ export class MarmotGroup<
       });
     }
 
+    // ============================================================================
+    // STEP 1b: Past-epoch decryption window (AC-PAST-1, AC-PAST-2)
+    // ============================================================================
+    // A member that has advanced N epochs beyond the sender's epoch cannot decrypt
+    // with the current exporter_secret.  If N <= pastEpochDepth, we can decrypt
+    // using the retained past epoch's exporter_secret and then process the inner
+    // MLS message through ts-mls (which uses historicalReceiverData for the inner
+    // MLS-layer decryption).
+    //
+    // Only application messages are resolved here.  Past-epoch commits are passed
+    // through to the regular commit processing path (Step 5) which handles them
+    // via the rollback decision tree (S2 / AC-ROLL-*).
+    // Tracks whether the past-epoch path mutated this.state (ts-mls advances the
+    // secret tree on a successful application-message decrypt). If it did and the
+    // batch is otherwise empty, we must persist before the early return below so a
+    // restart/replay does not see stale state (otherwise history can duplicate or
+    // sender-generation tracking breaks).
+    let pastEpochProcessedAny = false;
+    if (decryptFailed.length > 0 && this.#pastEpochExporterSecrets.size > 0) {
+      // Sort retained epochs newest-first for efficient lookup (most likely match first).
+      const retainedEpochs = [...this.#pastEpochExporterSecrets.keys()].sort(
+        (a, b) => (a > b ? -1 : 1),
+      );
+
+      // Events remaining after past-epoch decryption attempts (still failed).
+      const stillFailed: NostrEvent[] = [];
+
+      for (const event of decryptFailed) {
+        let decryptedMessage: MlsMessage | null = null;
+        let matchedEpoch: bigint | undefined;
+
+        for (const epoch of retainedEpochs) {
+          const secret = this.#pastEpochExporterSecrets.get(epoch);
+          if (!secret) continue;
+          const msg = await tryDecryptGroupMessageEventWithExporterSecret(
+            event,
+            secret,
+            this.ciphersuite,
+          );
+          if (msg !== null) {
+            decryptedMessage = msg;
+            matchedEpoch = epoch;
+            break;
+          }
+        }
+
+        if (decryptedMessage === null || matchedEpoch === undefined) {
+          // Still unreadable after past-epoch window attempt.
+          stillFailed.push(event);
+          continue;
+        }
+
+        log(
+          "past-epoch decrypt succeeded event:%s matched-epoch:%d",
+          event.id.slice(0, 8),
+          matchedEpoch,
+        );
+
+        // Only application messages are handled here (AC-PAST-1 / no-rollback rule).
+        // Past-epoch commits pass through to the normal commit path.
+        const isPastEpochAppMsg =
+          decryptedMessage.wireformat === wireformats.mls_private_message &&
+          decryptedMessage.privateMessage.contentType ===
+            contentTypes.application;
+
+        if (!isPastEpochAppMsg) {
+          // Past-epoch commit or proposal: add to `read` so the regular
+          // commit/proposal processing path handles it.
+          read.push({ event, message: decryptedMessage });
+          // Remove the earlier "Failed to decrypt" error so the event doesn't
+          // show two errors if it later processes successfully.
+          const errIdx = errorList.findIndex((e) => e.eventId === event.id);
+          if (errIdx !== -1) errorList.splice(errIdx, 1);
+          continue;
+        }
+
+        // Self-echo guard (mirrors Step 3): if this is our own application
+        // message coming back via a relay echo, we already advanced this.state
+        // at send time. Re-processing it against the (now advanced) ratchet
+        // would throw "desired gen in the past" or duplicate local history.
+        // The past-epoch window can decrypt our echo via a retained key, so the
+        // guard must run here too — Step 3 never sees these events.
+        if (this.#sentEventIds.delete(event.id)) {
+          log(
+            "skip past-epoch event:%s reason:self-echo",
+            event.id.slice(0, 8),
+          );
+          // It decrypted, so drop the earlier "Failed to decrypt" error.
+          const errIdx = errorList.findIndex((e) => e.eventId === event.id);
+          if (errIdx !== -1) errorList.splice(errIdx, 1);
+          yield {
+            kind: "skipped",
+            event,
+            message: decryptedMessage,
+            reason: "self-echo",
+          };
+          continue;
+        }
+
+        // Past-epoch application message: process through ts-mls so that
+        // historicalReceiverData is used for inner MLS-layer decryption.
+        // Critically: do NOT invoke the rollback path (AC-PAST-1).
+        try {
+          // decryptedMessage is narrowed to MlsPrivateMessage (wireformat check above),
+          // which satisfies the MlsFramedMessage constraint of processMessage.
+          const result = await processMessage({
+            context: {
+              cipherSuite: this.ciphersuite,
+              authService: marmotAuthService,
+              externalPsks: {},
+              clientConfig: this.#mlsClientConfig,
+            },
+            state: this.state,
+            message: decryptedMessage as MlsFramedMessage,
+            callback: acceptAll,
+          });
+
+          if (result.kind === "applicationMessage") {
+            log(
+              "past-epoch application message event:%s epoch:%d",
+              event.id.slice(0, 8),
+              matchedEpoch,
+            );
+
+            // Track under the matched past epoch for rollback invalidation bookkeeping.
+            const epochMsgs = this.#messagesByEpoch.get(matchedEpoch) ?? [];
+            epochMsgs.push(event.id);
+            this.#messagesByEpoch.set(matchedEpoch, epochMsgs);
+
+            // Update state for forward secrecy (ts-mls advances the secret tree).
+            this.state = result.newState;
+            pastEpochProcessedAny = true;
+
+            // Persist to history if configured.
+            if (this.history) {
+              try {
+                await this.history.saveMessage(result.message);
+              } catch (err) {
+                this.emit("historyError", err as Error);
+              }
+            }
+
+            // Remove the earlier error entry — this event succeeded.
+            const errIdx = errorList.findIndex((e) => e.eventId === event.id);
+            if (errIdx !== -1) errorList.splice(errIdx, 1);
+
+            yield {
+              kind: "processed",
+              result,
+              event,
+              message: decryptedMessage,
+            };
+            this.emit("applicationMessage", result.message);
+          } else {
+            // Unexpected result kind for a past-epoch application message.
+            // Leave in stillFailed for unreadable reporting.
+            stillFailed.push(event);
+          }
+        } catch (processErr) {
+          log(
+            "past-epoch processMessage failed event:%s: %O",
+            event.id.slice(0, 8),
+            processErr,
+          );
+          errorList.push({ eventId: event.id, error: processErr });
+          stillFailed.push(event);
+        }
+      }
+
+      // Replace decryptFailed with only the events that are still unresolved.
+      decryptFailed.length = 0;
+      decryptFailed.push(...stillFailed);
+    }
+
     // If nothing was readable the exporter_secret cannot change this round, so
     // retrying would always fail the same way.  Yield decrypt failures now.
     if (read.length === 0) {
+      // Step 1b may have advanced this.state via a past-epoch application
+      // message even though `read` is empty. Persist that advance before
+      // returning so a restart does not replay against stale state.
+      if (pastEpochProcessedAny) {
+        await this.save();
+        log(
+          "state saved after past-epoch-only batch – epoch:%d",
+          this.state.groupContext.epoch,
+        );
+      }
       log(
         "nothing readable – yielding %d decrypt failure(s) as unreadable",
         decryptFailed.length,
@@ -1278,16 +1728,83 @@ export class MarmotGroup<
           continue;
         }
 
+        // Past-epoch proposal routing (eventual convergence for proposal-ref
+        // commits). A proposal for an epoch we already advanced past cannot be
+        // applied to current state — but a competing commit that wins a rollback
+        // to that epoch may reference it via ProposalRef. If we hold a snapshot
+        // for the proposal's epoch, merge the proposal into THAT snapshot's
+        // unappliedProposals so the later rollback validation can resolve the
+        // reference. Without this, the late proposal would be processed against
+        // current state (and fail), and the winning commit would stay stuck
+        // unreadable forever.
+        if (
+          message.wireformat === wireformats.mls_private_message &&
+          message.privateMessage.contentType === contentTypes.proposal
+        ) {
+          const proposalEpoch =
+            typeof message.privateMessage.epoch === "bigint"
+              ? message.privateMessage.epoch
+              : BigInt(message.privateMessage.epoch);
+          if (proposalEpoch < this.state.groupContext.epoch) {
+            const pastGroupIdHex = bytesToHex(this.id);
+            const pastSnap = await this.#snapshots.get(
+              pastGroupIdHex,
+              proposalEpoch,
+            );
+            if (pastSnap) {
+              try {
+                const snapState = deserializeClientState(pastSnap.state);
+                const merged = await processMessage({
+                  context: {
+                    cipherSuite: this.ciphersuite,
+                    authService: marmotAuthService,
+                    externalPsks: {},
+                    clientConfig: this.#mlsClientConfig,
+                  },
+                  state: snapState,
+                  message,
+                  callback: acceptAll,
+                });
+                if (merged.kind === "newState") {
+                  await this.#snapshots.set(pastGroupIdHex, proposalEpoch, {
+                    ...pastSnap,
+                    state: serializeClientState(merged.newState),
+                  });
+                  log(
+                    "past-epoch proposal event:%s merged into epoch-%d snapshot",
+                    event.id.slice(0, 8),
+                    proposalEpoch,
+                  );
+                  yield { kind: "processed", result: merged, event, message };
+                  continue;
+                }
+              } catch (mergeErr) {
+                log(
+                  "past-epoch proposal event:%s could not merge into snapshot: %O",
+                  event.id.slice(0, 8),
+                  mergeErr,
+                );
+                // Fall through to the normal path (will likely be unreadable).
+              }
+            }
+            // No snapshot for that epoch: nothing to merge into. Fall through;
+            // the normal path will queue it unreadable for a later retry.
+          }
+        }
+
         // processMessage handles:
         // - Proposals: Adds them to state.unappliedProposals (keyed by proposal reference)
         // - Application messages: Decrypts content and returns it
         // - Both update state as needed (for forward secrecy)
-        // In v2, processMessage takes a single params object with context
+        // In v2, processMessage takes a single params object with context.
+        // Pass clientConfig so ts-mls retains historicalReceiverData for pastEpochDepth
+        // epochs (inner MLS-layer past-epoch decryption support).
         const result = await processMessage({
           context: {
             cipherSuite: this.ciphersuite,
             authService: marmotAuthService,
             externalPsks: {},
+            clientConfig: this.#mlsClientConfig,
           },
           state: this.state,
           message,
@@ -1305,6 +1822,12 @@ export class MarmotGroup<
           yield { kind: "processed", result, event, message };
         } else if (result.kind === "applicationMessage") {
           log("application message event:%s", event.id.slice(0, 8));
+          // Track this message under the current epoch for rollback invalidation.
+          const decryptEpoch = this.state.groupContext.epoch;
+          const epochMsgs = this.#messagesByEpoch.get(decryptEpoch) ?? [];
+          epochMsgs.push(event.id);
+          this.#messagesByEpoch.set(decryptEpoch, epochMsgs);
+
           // Application messages also update state (for forward secrecy)
           this.state = result.newState;
 
@@ -1345,8 +1868,11 @@ export class MarmotGroup<
     // sorted order. Each commit changes the epoch and rotates keys, so later
     // commits depend on earlier ones.
 
-    // Create admin verification callback for commit processing
-    const adminCallback = this.createAdminVerificationCallback();
+    // Admin verification callbacks are built per-commit from the EXACT state
+    // each commit is processed against (see createAdminVerificationCallbackForState).
+    // A single callback captured here would carry a stale ratchet tree once the
+    // first commit advances state, or when the rollback path validates against a
+    // past-epoch snapshot.
 
     for (const { event, message } of commits) {
       if (message.wireformat !== wireformats.mls_private_message) {
@@ -1362,19 +1888,190 @@ export class MarmotGroup<
         typeof message.privateMessage.epoch === "bigint"
           ? message.privateMessage.epoch
           : BigInt(message.privateMessage.epoch);
-      const currentEpoch = this.state.groupContext.epoch;
 
-      // Commits from past epochs were already applied — skip and report them.
-      if (commitEpoch < currentEpoch) {
-        log(
-          "skip commit event:%s reason:past-epoch (commit=%d current=%d)",
-          event.id.slice(0, 8),
+      // -----------------------------------------------------------------------
+      // MIP-03 rollback decision tree for past-epoch commits
+      //
+      // A commit whose epoch < currentEpoch might be a competing commit we
+      // raced against, not necessarily one we already applied.
+      // -----------------------------------------------------------------------
+      if (commitEpoch < this.state.groupContext.epoch) {
+        const groupIdHex = bytesToHex(this.id);
+        const snapshot = await this.#snapshots.get(groupIdHex, commitEpoch);
+
+        if (!snapshot?.appliedCommit) {
+          // No snapshot / no recorded competing commit → genuinely past; skip.
+          log(
+            "skip commit event:%s reason:past-epoch (commit=%d current=%d)",
+            event.id.slice(0, 8),
+            commitEpoch,
+            this.state.groupContext.epoch,
+          );
+          yield { kind: "skipped", event, message, reason: "past-epoch" };
+          continue;
+        }
+
+        // Replay guard: same commit re-delivered (our own echo or re-wrap).
+        if (
+          isReplayOfApplied(
+            { id: event.id, contentHash: mlsCommitContentHash(message) },
+            snapshot.appliedCommit,
+          )
+        ) {
+          log(
+            "skip commit event:%s reason:self-echo-commit",
+            event.id.slice(0, 8),
+          );
+          yield { kind: "skipped", event, message, reason: "self-echo-commit" };
+          continue;
+        }
+
+        // Lost-race guard: competing commit is deterministically worse.
+        if (!isBetterCandidate(event, snapshot.appliedCommit)) {
+          log(
+            "skip commit event:%s reason:lost-race (commit=%d current=%d)",
+            event.id.slice(0, 8),
+            commitEpoch,
+            this.state.groupContext.epoch,
+          );
+          yield { kind: "skipped", event, message, reason: "lost-race" };
+          continue;
+        }
+
+        // The competing commit wins the MIP-03 *metadata* race. But
+        // isBetterCandidate only inspects the outer Nostr envelope
+        // (created_at / id), which a hostile sender fully controls. Apply the
+        // winner against a throwaway deserialization of the epoch-N snapshot
+        // FIRST — with an admin callback bound to that exact state — and only
+        // mutate/persist this.state once it has genuinely applied. This makes
+        // the rollback TRANSACTIONAL: a candidate that fails (invalid,
+        // admin-rejected, or not-yet-applicable) leaves our current branch
+        // completely untouched, so a hostile or premature commit can never
+        // force a durable state regression.
+        const candidateState = deserializeClientState(snapshot.state);
+        const candidateCallback =
+          this.createAdminVerificationCallbackForState(candidateState);
+        let winnerResult: ProcessMessageResult | undefined;
+        try {
+          const probe = await processMessage({
+            context: {
+              cipherSuite: this.ciphersuite,
+              authService: marmotAuthService,
+              externalPsks: {},
+              clientConfig: this.#mlsClientConfig,
+            },
+            state: candidateState,
+            message,
+            callback: candidateCallback,
+          });
+          if (probe.kind !== "newState") {
+            // A commit that does not yield a new state is unprocessable here.
+            yield { kind: "skipped", event, message, reason: "lost-race" };
+            continue;
+          }
+          if (probe.actionTaken === "reject") {
+            log(
+              "rollback candidate event:%s rejected by admin policy – keeping current state",
+              event.id.slice(0, 8),
+            );
+            yield { kind: "rejected", result: probe, event, message };
+            continue;
+          }
+          winnerResult = probe;
+        } catch (probeErr) {
+          // The winner may be only TEMPORARILY unverifiable — e.g. it
+          // references a proposal that has not arrived yet. Queue it for retry
+          // rather than dropping it as a permanent "lost-race", so eventual
+          // convergence is preserved.
+          log(
+            "rollback candidate event:%s not yet applicable – queued for retry: %O",
+            event.id.slice(0, 8),
+            probeErr,
+          );
+          errorList.push({ eventId: event.id, error: probeErr });
+          unreadable.push(event);
+          continue;
+        }
+
+        if (winnerResult === undefined || winnerResult.kind !== "newState") {
+          // Defensive: all non-success paths above already continued.
+          yield { kind: "skipped", event, message, reason: "lost-race" };
+          continue;
+        }
+
+        // Winner applied cleanly against the epoch-N snapshot. Commit the
+        // rollback now — a single in-memory mutation, persisted by the save()
+        // at the end of ingest(). We never write a half-rolled-back state.
+        const loserEpoch = this.state.groupContext.epoch;
+        const rollbackGroupIdHex = bytesToHex(this.id);
+
+        // Tag the epoch-N snapshot with the WINNER as the applied commit so a
+        // further competing commit for epoch N compares against what we kept.
+        await this.#snapshots.set(rollbackGroupIdHex, commitEpoch, {
+          groupId: this.id,
+          epoch: commitEpoch,
+          state: snapshot.state,
+          appliedCommit: {
+            eventId: event.id,
+            createdAt: event.created_at,
+            contentHash: mlsCommitContentHash(message),
+          },
+        });
+        // Retain epoch-N's exporter secret for the past-epoch window
+        // (idempotent — recorded when the loser was first applied).
+        this.#recordAndPruneExporterSecret(
           commitEpoch,
-          currentEpoch,
+          candidateState.keySchedule.exporterSecret,
         );
-        yield { kind: "skipped", event, message, reason: "past-epoch" };
+
+        // Single state mutation: adopt the winner branch.
+        this.state = winnerResult.newState;
+        log(
+          "rollback event:%s wins MIP-03 race – converged epoch %d->%d",
+          event.id.slice(0, 8),
+          loserEpoch,
+          this.state.groupContext.epoch,
+        );
+
+        // Collect application messages decrypted on the discarded loser branch
+        // (epochs strictly above the target) and emit the rollback event.
+        const invalidatedMessages: string[] = [];
+        for (let ep = commitEpoch + 1n; ep <= loserEpoch; ep++) {
+          const msgs = this.#messagesByEpoch.get(ep);
+          if (msgs) {
+            invalidatedMessages.push(...msgs);
+            this.#messagesByEpoch.delete(ep);
+          }
+        }
+        log(
+          "emit rollback – targetEpoch:%d winner:%s invalidated:%d",
+          commitEpoch,
+          event.id.slice(0, 8),
+          invalidatedMessages.length,
+        );
+        this.emit("rollback", {
+          groupId: this.id,
+          targetEpoch: commitEpoch,
+          newHeadCommitEventId: event.id,
+          invalidatedMessages,
+        });
+
+        // Bounded cleanup alongside snapshot retention.
+        try {
+          await this.#snapshots.prune(
+            rollbackGroupIdHex,
+            commitEpoch - BigInt(this.#snapshotDepth),
+          );
+        } catch (pruneErr) {
+          this.log("snapshot prune failed (non-fatal): %O", pruneErr);
+        }
+        this.#pruneMessagesByEpoch(commitEpoch - BigInt(this.#snapshotDepth));
+
+        yield { kind: "processed", result: winnerResult, event, message };
         continue;
       }
+
+      const currentEpoch = this.state.groupContext.epoch;
 
       // Commits too far in the future can't be applied yet.
       // Add to unreadable so they are retried after state advances.
@@ -1402,22 +2099,48 @@ export class MarmotGroup<
         commitEpoch,
       );
 
+      // Snapshot pre-apply state before processMessage (AC-SNAP-1).
+      // Error propagates — we do NOT apply without a snapshot.
+      const ingestGroupIdHex = bytesToHex(this.id);
+      await this.#snapshots.set(ingestGroupIdHex, currentEpoch, {
+        groupId: this.id,
+        epoch: currentEpoch,
+        state: serializeClientState(this.state),
+        appliedCommit: {
+          eventId: event.id,
+          createdAt: event.created_at,
+          contentHash: mlsCommitContentHash(message),
+        },
+      });
+
+      // Record the current epoch's exporter_secret before the commit advances state
+      // so lagging members can still decrypt application messages encrypted under
+      // this epoch after the advance (AC-PAST-1).
+      this.#recordAndPruneExporterSecret(
+        currentEpoch,
+        this.state.keySchedule.exporterSecret,
+      );
+
       try {
         // processMessage handles:
         // - Decrypts the private message using group secrets from the current state
         // - Verifies message authenticity and sender
         // - Resolves proposal references from state.unappliedProposals (if needed)
         // - Applies the commit (updates ratchet tree, advances epoch, rotates keys)
-        // In v2, processMessage takes a single params object with context
+        // In v2, processMessage takes a single params object with context.
+        // Pass clientConfig so ts-mls retains historicalReceiverData for pastEpochDepth epochs.
+        // The admin callback is built from THIS state (the one being processed) —
+        // not a callback captured before earlier commits advanced the tree.
         const result = await processMessage({
           context: {
             cipherSuite: this.ciphersuite,
             authService: marmotAuthService,
             externalPsks: {},
+            clientConfig: this.#mlsClientConfig,
           },
           state: this.state,
           message,
-          callback: adminCallback, // Use admin verification callback for commits
+          callback: this.createAdminVerificationCallbackForState(this.state),
         });
 
         if (result.kind === "newState") {
@@ -1440,6 +2163,23 @@ export class MarmotGroup<
             event.id.slice(0, 8),
             this.state.groupContext.epoch,
           );
+
+          // Prune old snapshots (AC-RET-1).
+          // Prune failures must not poison the commit result: the commit has
+          // already been applied, so treat this as best-effort cleanup.
+          try {
+            await this.#snapshots.prune(
+              ingestGroupIdHex,
+              currentEpoch - BigInt(this.#snapshotDepth),
+            );
+          } catch (pruneErr) {
+            this.log("snapshot prune failed (non-fatal): %O", pruneErr);
+          }
+          // Keep per-epoch message tracking bounded alongside snapshot retention.
+          this.#pruneMessagesByEpoch(
+            currentEpoch - BigInt(this.#snapshotDepth),
+          );
+
           yield { kind: "processed", result, event, message };
         }
       } catch (error) {
@@ -1602,6 +2342,17 @@ export class MarmotGroup<
 
     this.log("removing group from store");
     await this.store.removeItem(bytesToHex(this.id));
+
+    // Clear epoch snapshots so persistent backends don't retain MLS secrets.
+    this.log("clearing epoch snapshots");
+    await this.#snapshots.clear(bytesToHex(this.id));
+
+    // Zero and drop the past-epoch exporter-secret ring (forward secrecy) so
+    // retained key material does not linger in memory after teardown.
+    for (const key of this.#pastEpochExporterSecrets.values()) {
+      key.fill(0);
+    }
+    this.#pastEpochExporterSecrets.clear();
 
     // Emit the destroyed event
     this.emit("destroyed", this);

@@ -1,0 +1,37 @@
+{
+  "module_name": "marmot-group (modified)",
+  "purpose": "Retain the last pastEpochDepth (default 5) epochs' outer encryption key material (exporter_secret) so that a member who has advanced beyond epoch N can still decrypt application messages that were encrypted under epoch N's exporter_secret, without triggering a rollback.",
+  "public_api": [
+    {
+      "name": "MarmotGroupOptions.pastEpochDepth",
+      "signature": "pastEpochDepth?: number",
+      "description": "Number of past epochs whose outer encryption key material (exporter_secret) to retain for lagging-member decryption. Defaults to 5. Kept bounded for forward secrecy."
+    },
+    {
+      "name": "MarmotGroup (constructor)",
+      "signature": "constructor(state: ClientState, options: MarmotGroupOptions): MarmotGroup",
+      "description": "Accepts pastEpochDepth in options; initialises the #pastEpochExporterSecrets ring and passes a matching ClientConfig (retainKeysForEpochs) to ts-mls processMessage calls."
+    }
+  ],
+  "private_files": [
+    "src/client/group/marmot-group.ts",
+    "src/client/group/__tests__/past-epoch-decrypt.test.ts"
+  ],
+  "owned_data": [
+    "#pastEpochExporterSecrets: Map<bigint, Uint8Array> — bounded ring of past exporter_secret values keyed by epoch; pruned to pastEpochDepth on each advance",
+    "#pastEpochDepth: number — the configured depth, defaults to 5"
+  ],
+  "dependencies_allowed": [
+    "ts-mls (mlsExporter, ClientConfig, defaultKeyRetentionConfig, defaultLifetimeConfig, defaultPaddingConfig, defaultKeyPackageEqualityConfig)",
+    "src/core/group-message.ts (decryptGroupMessageEvent — for outer-layer retry)",
+    "src/client/group/epoch-snapshot.ts (no change — snapshot store only used for rollback path)"
+  ],
+  "dependencies_forbidden": [
+    "src/core/ must not import from src/client/",
+    "No new runtime exports from src/core/"
+  ],
+  "external_ports": [],
+  "events_emitted": [],
+  "events_consumed": [],
+  "test_targets": ["src/client/group/__tests__/past-epoch-decrypt.test.ts"]
+}

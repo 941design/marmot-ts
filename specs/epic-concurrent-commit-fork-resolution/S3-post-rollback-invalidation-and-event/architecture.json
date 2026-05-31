@@ -1,0 +1,35 @@
+{
+  "module_name": "marmot-group (S3 extension)",
+  "purpose": "Add post-rollback message invalidation tracking and typed 'rollback' event emission to MarmotGroup. After a MIP-03 fork resolution, consumers receive the RollbackInfo payload naming which application messages were decrypted under the now-discarded epoch, the target epoch restored, and the winning commit id.",
+  "public_api": [
+    {
+      "name": "MarmotGroupEvents.rollback",
+      "signature": "rollback: (info: RollbackInfo) => void",
+      "description": "New entry added to the existing MarmotGroupEvents type. Emitted exactly once per rollback, after the winning commit has been applied."
+    },
+    {
+      "name": "RollbackInfo.invalidatedMessages",
+      "signature": "invalidatedMessages: string[]",
+      "description": "Now populated (previously always []). Event IDs of application messages that were decrypted under the losing epoch's keys and are therefore no longer valid in the winning branch."
+    }
+  ],
+  "private_files": ["src/client/group/marmot-group.ts"],
+  "owned_data": [
+    "#messagesByEpoch: Map<bigint, string[]> — in-memory map from epoch bigint to list of application message event IDs decrypted in that epoch"
+  ],
+  "dependencies_allowed": [
+    "src/client/group/epoch-snapshot.ts",
+    "src/core/group-message.ts",
+    "eventemitter3"
+  ],
+  "dependencies_forbidden": [
+    "src/core/client-state.ts (new exports)",
+    "src/extra/ (any modifications)"
+  ],
+  "external_ports": [],
+  "events_emitted": [
+    "rollback: RollbackInfo — emitted after rollback + winner re-apply succeeds"
+  ],
+  "events_consumed": [],
+  "test_targets": ["src/__tests__/integration/rollback-event.test.ts"]
+}

@@ -1,0 +1,73 @@
+{
+  "story_id": "S1",
+  "status": "done",
+  "final_outcome": "accepted",
+  "remediation_rounds": 2,
+  "retrospective": {
+    "skipped": false,
+    "harder_than_needed": "The #h Nostr group event tag uses marmotData.nostrGroupId, not the MLS group ID (MarmotGroup.idStr). This is an undocumented semantic difference that caused the AC-SNAP-1 ingest tests to fail silently until the filter was corrected to use getMarmotGroupData(state).nostrGroupId. The implementation guide did not call this out.",
+    "surprised_by": "Codex found that snapshot set() and prune() calls in selfUpdate() and commit() were not wrapped as best-effort, meaning a custom backend rejection after a relay-ACKed publish could abort state advance or Welcome delivery. The original ingest() fix only covered the prune path inside the commit-error catch; the two outbound-publish paths needed the same treatment.",
+    "scope": "project_specific",
+    "outcome": "merged",
+    "commits_made": [
+      "7f2ad9e71f1f8ede48d738e46297fd115eaed7f6",
+      "6449335b2315eb90abaaab5a208df1e11e8caea5",
+      "644d0500e908360115b4efb1872c3b7c1b26d2f4",
+      "f882a199f1cb67587edc432dded271dd6a818de6",
+      "d6832a4956f6673478aa6509674a353c2ce54955",
+      "2d9c5168da4b868eef36fe799c06ff8b8a5c33ff",
+      "2bb9bc53e463f0d0c0e4b0c7a8240fc5c0b45404",
+      "5d3527c2add576929a05de5f8b358fe2c0a41a6e",
+      "c9e8b9f10e54b38e6dcf30cd496059eef8e37db6",
+      "1b4fa17a3de418fb3efee71d55d33eac140f8011",
+      "547b8d553fe71c4eabe9c54b9fc0e6ddac4cdda1",
+      "644f6d237f772deb346893c2481a2b7aeb07629a",
+      "73d1f1681ed0faa6d76c3c06f1d2025815d3f8a2",
+      "0ec7a3f00445cc3c6a31a66e0c1d44a1e0c33008",
+      "2afe45f06e68e960b66a7896523d20db2ac2e400",
+      "8d60b60641546bce3a435db24a89340f6f1801e8",
+      "d3c317ba1cdca76fe8c74c0f02e27da0cf61f775",
+      "59ae4ff4f75a7a1c2ef47ed8daa221bb0802c8cd",
+      "415f1b5500988b11f1ab88bfd1af04525dc2646d",
+      "030f33e373ff7337eec2593014c0ac278e665c65",
+      "9333d287dd511cb7ae5f4d4354891d2a395707f3",
+      "41bc849122f9fd42077e232a4667a0b954f70d3d",
+      "9f41ce8272f1ddfbb3d6fbc77eb9f04703de67ef",
+      "fde7b0cf16b08628aff8d13b3e7a1f76a5f35d5e",
+      "c8a73f50e244a173f8f4707548b467b1493cd6e2",
+      "eb1f5e5cedd3e5c45c688bac884edadd864a794e",
+      "0e30c3f3c259d30443d2349ae32032ac029a6d5d",
+      "36f73023796fa293d513c8f57dec883e7e85ce97",
+      "49697aa544f7a8669d58ebd2b706309b0a7aa935",
+      "d1f12c93324eb122e96c2851bb778545eedd4f1f"
+    ],
+    "absorbed_from": [],
+    "lead_clarifications": []
+  },
+  "files_created": [
+    "src/client/group/epoch-snapshot.ts",
+    "src/extra/in-memory-epoch-snapshot-store.ts",
+    "src/extra/__tests__/in-memory-epoch-snapshot-store.test.ts",
+    "src/client/group/__tests__/marmot-group-snapshots.test.ts",
+    "specs/epic-concurrent-commit-fork-resolution/S1-epoch-snapshot-store-and-pending-commit/architecture.json",
+    "specs/epic-concurrent-commit-fork-resolution/S1-epoch-snapshot-store-and-pending-commit/baseline.json",
+    ".changeset/epoch-snapshot-store.md"
+  ],
+  "files_modified": [
+    "src/client/group/index.ts",
+    "src/extra/index.ts",
+    "src/client/group/marmot-group.ts",
+    "src/client/groups-manager.ts",
+    "src/client/marmot-client.ts"
+  ],
+  "implementation_summary": "Implements epoch snapshot storage infrastructure for S1. Created EpochSnapshot type and EpochSnapshotStoreBackend interface in epoch-snapshot.ts. Created InMemoryEpochSnapshotStore in src/extra/. Wired snapshot calls into MarmotGroup.ingest() (AC-SNAP-1), selfUpdate() (AC-SNAP-2), and commit() (AC-SNAP-2). All snapshot set/prune calls are best-effort (try/catch with non-fatal log) so a custom backend rejection cannot abort an already-ACKed epoch transition or block Welcome delivery. Publish failure leaves state and snapshot store unchanged (AC-SNAP-3). Prune called after each advance with keepAboveEpoch = currentEpoch - snapshotDepth (AC-RET-1). Default snapshotDepth=2 (AC-RET-2, AC-STRUCT-3). destroy() calls clear() to clean up persistent snapshot backends. Plumbed snapshots/snapshotDepth through GroupsManager and MarmotClient.groupOptions. Added changeset for new public snapshot API.",
+  "tests": {
+    "baseline": 434,
+    "final": 454,
+    "added": 20
+  },
+  "reviews": {
+    "ollama": "skipped:lead-authorized (OLLAMA_REVIEW_MODEL not set)",
+    "codex": "ran (2 rounds — findings addressed: prune-in-catch contamination, missing destroy clear(), missing changeset, best-effort wrapping for set/prune in selfUpdate and commit)"
+  }
+}
