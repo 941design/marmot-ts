@@ -56,6 +56,16 @@ export type MarmotClientOptions<
   keyPackageStore: GenericKeyValueStore<StoredKeyPackage>;
   /** Key value store for the {@link InviteManager} class, if non is provided an {@link InMemoryKeyValueStore} is used */
   inviteStore?: GenericKeyValueStore<StoredInviteEntry>;
+  /**
+   * Options forwarded to the {@link InviteManager} instance created by this
+   * client. Use `shouldRemoveOnFailure` to override the default
+   * unconditional-strip-on-decrypt-failure policy — return `false` for a
+   * given error/gift-wrap to keep it retrievable for retry instead of
+   * dropping it from the `received:` store after one failed attempt.
+   */
+  inviteOptions?: {
+    shouldRemoveOnFailure?: (error: unknown, giftwrap: unknown) => boolean;
+  };
   /** The crypto provider to use for cryptographic operations */
   cryptoProvider?: CryptoProvider;
   /** The nostr relay pool to use for the client. Should implement GroupNostrInterface for group operations. */
@@ -153,6 +163,7 @@ export class MarmotClient<
     this.invites = new InviteManager({
       signer: this.signer,
       store: options.inviteStore || new InMemoryKeyValueStore(),
+      shouldRemoveOnFailure: options.inviteOptions?.shouldRemoveOnFailure,
     });
   }
 

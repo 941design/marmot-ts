@@ -64,6 +64,20 @@ export interface InviteManagerOptions {
 
   /** Storage backend for invite entries */
   store: GenericKeyValueStore<StoredInviteEntry>;
+
+  /**
+   * Predicate consulted immediately before `decryptGiftWrap`'s catch block
+   * strips a failed gift wrap from the `received:` bucket. Return `false` to
+   * keep the wrap retrievable (e.g. via {@link InviteManager.getReceived} or a
+   * later {@link InviteManager.decryptGiftWrap} call) so the app can retry a
+   * transient/retryable failure instead of losing the wrap after one attempt.
+   *
+   * Defaults to `() => true` when omitted, which preserves the original
+   * unconditional-strip behavior. If the predicate itself throws, the throw
+   * is caught and treated as `true` (fail safe to the default behavior)
+   * rather than propagating out of the decrypt catch block.
+   */
+  shouldRemoveOnFailure?: (error: unknown, giftwrap: unknown) => boolean;
 }
 
 /**
@@ -94,6 +108,7 @@ export class InviteManager extends EventEmitter<InviteManagerEvents> {
   private signer: EventSigner;
   private store: GenericKeyValueStore<StoredInviteEntry>;
   private seenCache: Set<string> | null = null;
+  private shouldRemoveOnFailure: (error: unknown, giftwrap: unknown) => boolean;
 
   #log = logger.extend("InviteManager");
 
@@ -101,6 +116,7 @@ export class InviteManager extends EventEmitter<InviteManagerEvents> {
     super();
     this.signer = options.signer;
     this.store = options.store;
+    this.shouldRemoveOnFailure = options.shouldRemoveOnFailure ?? (() => true);
   }
 
   /** Lazily load the seen set from store into memory */
@@ -132,6 +148,32 @@ export class InviteManager extends EventEmitter<InviteManagerEvents> {
    * @throws Error if event is not kind 1059
    */
   async ingestEvent(event: NostrEvent): Promise<boolean> {
+    return this.ingestEventInternal(event, /* persistImmediately */ true);
+  }
+
+  /**
+   * Shared implementation for `ingestEvent` (single) and `ingestEvents`
+   * (batch).
+   *
+   * Writes the `received:<id>` entry and adds the id to the in-memory seen
+   * set. `persistImmediately` controls whether the updated seen set is
+   * flushed to the store right away:
+   * - `true` (the `ingestEvent` path): one `persistSeen()` per event, same
+   *   as the original behavior.
+   * - `false` (the `ingestEvents` batch path): the caller flushes once after
+   *   the whole batch, avoiding an O(n) rewrite of the seen array for every
+   *   one of n events (O(n^2) total writes) on a large cold-start drain.
+   *
+   * Crash-safe ordering is preserved in both modes: `received:<id>` is
+   * always written, and the in-memory set updated, before any
+   * `persistSeen()` call that could make the id durably "seen". A crash
+   * before that flush leaves the id received-but-not-seen — safe and
+   * re-drivable — never seen-but-not-received.
+   */
+  private async ingestEventInternal(
+    event: NostrEvent,
+    persistImmediately: boolean,
+  ): Promise<boolean> {
     if (!isGiftWrap(event)) {
       throw new Error(`Expected kind 1059 gift wrap, got kind ${event.kind}`);
     }
@@ -149,7 +191,7 @@ export class InviteManager extends EventEmitter<InviteManagerEvents> {
 
     // Then update seen index
     seen.add(event.id);
-    await this.persistSeen();
+    if (persistImmediately) await this.persistSeen();
 
     this.emit("received", event);
     return true;
@@ -158,6 +200,12 @@ export class InviteManager extends EventEmitter<InviteManagerEvents> {
   /**
    * Ingest multiple gift wrap events in batch.
    *
+   * All `received:<id>` writes happen per-event as usual, but the `__seen`
+   * index is persisted exactly once for the whole batch (after every event
+   * has been processed) instead of once per event. This keeps a large
+   * cold-start drain (e.g. 1000+ queued Welcome wraps) O(n) in storage
+   * writes instead of O(n^2).
+   *
    * @param events - Array of gift wrap events
    * @returns Count of new events stored
    */
@@ -165,13 +213,19 @@ export class InviteManager extends EventEmitter<InviteManagerEvents> {
     let newCount = 0;
     for (const event of events) {
       try {
-        const isNew = await this.ingestEvent(event);
+        const isNew = await this.ingestEventInternal(event, false);
         if (isNew) newCount++;
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         this.emit("error", err, event.id);
       }
     }
+
+    // Single flush for the whole batch. Safe because every `received:<id>`
+    // write above already landed before this point (crash-safe ordering is
+    // preserved — see ingestEventInternal doc).
+    if (newCount > 0) await this.persistSeen();
+
     return newCount;
   }
 
@@ -232,8 +286,26 @@ export class InviteManager extends EventEmitter<InviteManagerEvents> {
       const err = error instanceof Error ? error : new Error(String(error));
       this.emit("error", err, giftwrap.id);
 
-      // Remove from received (failed to process)
-      await this.store.removeItem(`${RECEIVED_PREFIX}${giftwrap.id}`);
+      // Consult the removal-policy predicate before stripping. A retryable
+      // failure (predicate returns false) leaves the wrap in `received:` so
+      // it can be retried; a predicate that itself throws fails safe to the
+      // default unconditional-strip behavior rather than propagating.
+      let shouldRemove: boolean;
+      try {
+        shouldRemove = this.shouldRemoveOnFailure(err, giftwrap);
+      } catch (predicateError) {
+        this.#log(
+          "shouldRemoveOnFailure threw for gift wrap %s, falling back to strip: %o",
+          giftwrap.id,
+          predicateError,
+        );
+        shouldRemove = true;
+      }
+
+      if (shouldRemove) {
+        // Remove from received (failed to process)
+        await this.store.removeItem(`${RECEIVED_PREFIX}${giftwrap.id}`);
+      }
       this.emit("processed", giftwrap.id);
 
       return null;

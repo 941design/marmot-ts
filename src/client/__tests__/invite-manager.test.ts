@@ -196,6 +196,165 @@ describe("InviteManager", () => {
       expect(newCount).toBe(1); // Only valid event counted
       expect(errorEmitted).toBe(true);
     });
+
+    describe("batched seen-set persistence (cold-start drain)", () => {
+      /**
+       * Wraps MemoryBackend and records every `setItem` call, so a test can
+       * assert both the *count* of writes to a given key and their relative
+       * *order* against writes to other keys — the two things that matter
+       * for O(n) batching + crash-safe ordering.
+       */
+      class CountingBackend<T> implements GenericKeyValueStore<T> {
+        private inner = new MemoryBackend<T>();
+        public writeLog: string[] = [];
+
+        async getItem(key: string): Promise<T | null> {
+          return this.inner.getItem(key);
+        }
+
+        async setItem(key: string, value: T): Promise<T> {
+          this.writeLog.push(key);
+          return this.inner.setItem(key, value);
+        }
+
+        async removeItem(key: string): Promise<void> {
+          return this.inner.removeItem(key);
+        }
+
+        async clear(): Promise<void> {
+          return this.inner.clear();
+        }
+
+        async keys(): Promise<string[]> {
+          return this.inner.keys();
+        }
+
+        seenWriteCount(): number {
+          return this.writeLog.filter((k) => k === "__seen").length;
+        }
+      }
+
+      it("persists the seen-set exactly once for a batch of N new events, not once per event", async () => {
+        const pubkey = await account.signer.getPublicKey();
+        const countingStore = new CountingBackend<StoredInviteEntry>();
+        const manager = new InviteManager({
+          signer: account.signer,
+          store: countingStore,
+        });
+
+        const N = 25;
+        const events = Array.from({ length: N }, (_, i) =>
+          createMockGiftWrap(`batch-id-${i}`, pubkey),
+        );
+
+        const newCount = await manager.ingestEvents(events);
+
+        expect(newCount).toBe(N);
+        // O(n) received writes, but exactly ONE seen-set persist — not N.
+        expect(countingStore.seenWriteCount()).toBe(1);
+
+        const seenIds = await getSeenIds(countingStore);
+        expect(seenIds).toHaveLength(N);
+      });
+
+      it("writes every received:<id> before the single batch-end seen persist (crash-safe ordering)", async () => {
+        const pubkey = await account.signer.getPublicKey();
+        const countingStore = new CountingBackend<StoredInviteEntry>();
+        const manager = new InviteManager({
+          signer: account.signer,
+          store: countingStore,
+        });
+
+        const N = 10;
+        const events = Array.from({ length: N }, (_, i) =>
+          createMockGiftWrap(`order-id-${i}`, pubkey),
+        );
+
+        await manager.ingestEvents(events);
+
+        const seenIndex = countingStore.writeLog.indexOf("__seen");
+        expect(seenIndex).toBe(N); // after all N `received:` writes
+        expect(seenIndex).toBeGreaterThan(-1);
+
+        const receivedWrites = countingStore.writeLog.filter((k) =>
+          k.startsWith("received:"),
+        );
+        expect(receivedWrites).toHaveLength(N);
+
+        // Every received:<id> write must appear before the (single) seen
+        // write — a crash before the seen flush leaves ids
+        // received-but-not-seen (safe/re-drivable), never the reverse.
+        for (const key of receivedWrites) {
+          expect(countingStore.writeLog.indexOf(key)).toBeLessThan(seenIndex);
+        }
+      });
+
+      it("produces the same seen-set contents as ingesting the same events one-by-one via ingestEvent", async () => {
+        const pubkey = await account.signer.getPublicKey();
+        const events = Array.from({ length: 8 }, (_, i) =>
+          createMockGiftWrap(`parity-id-${i}`, pubkey),
+        );
+
+        const batchStore = new MemoryBackend<StoredInviteEntry>();
+        const batchManager = new InviteManager({
+          signer: account.signer,
+          store: batchStore,
+        });
+        await batchManager.ingestEvents(events);
+
+        const singleStore = new MemoryBackend<StoredInviteEntry>();
+        const singleManager = new InviteManager({
+          signer: account.signer,
+          store: singleStore,
+        });
+        for (const event of events) {
+          await singleManager.ingestEvent(event);
+        }
+
+        const batchSeen = (await getSeenIds(batchStore)).sort();
+        const singleSeen = (await getSeenIds(singleStore)).sort();
+        expect(batchSeen).toEqual(singleSeen);
+
+        const batchReceived = (await batchManager.getReceived())
+          .map((e) => e.id)
+          .sort();
+        const singleReceived = (await singleManager.getReceived())
+          .map((e) => e.id)
+          .sort();
+        expect(batchReceived).toEqual(singleReceived);
+      });
+
+      it("does not re-ingest (or re-count) already-seen wraps after a reload, preserving dedup across the batch flush", async () => {
+        const pubkey = await account.signer.getPublicKey();
+        const countingStore = new CountingBackend<StoredInviteEntry>();
+        const events = Array.from({ length: 5 }, (_, i) =>
+          createMockGiftWrap(`reload-id-${i}`, pubkey),
+        );
+
+        const firstManager = new InviteManager({
+          signer: account.signer,
+          store: countingStore,
+        });
+        const firstCount = await firstManager.ingestEvents(events);
+        expect(firstCount).toBe(5);
+
+        // Simulate a reload: fresh InviteManager instance (no in-memory
+        // seenCache) reading from the same persisted store.
+        const reloadedManager = new InviteManager({
+          signer: account.signer,
+          store: countingStore,
+        });
+        const secondCount = await reloadedManager.ingestEvents(events);
+
+        // All 5 wraps are already seen — nothing new, and no seen-set
+        // rewrite should occur for an all-duplicate batch.
+        expect(secondCount).toBe(0);
+        expect(countingStore.seenWriteCount()).toBe(1); // unchanged from first batch
+
+        const received = await reloadedManager.getReceived();
+        expect(received).toHaveLength(5); // unchanged — no duplicate storage
+      });
+    });
   });
 
   describe("decryptGiftWraps", () => {
@@ -220,6 +379,95 @@ describe("InviteManager", () => {
       // Should be removed from received even on failure
       const received = await inviteManager.getReceived();
       expect(received).toHaveLength(0);
+    });
+
+    it("should still strip the wrap from received on decrypt failure when shouldRemoveOnFailure is omitted (default preserves today's behavior)", async () => {
+      const pubkey = await account.signer.getPublicKey();
+      const giftWrap = createMockGiftWrap("default-strip-id", pubkey);
+
+      // `inviteManager` (from beforeEach) is constructed with no
+      // `shouldRemoveOnFailure` option at all — this exercises AC-FORK-1.
+      await inviteManager.ingestEvent(giftWrap);
+
+      const result = await inviteManager.decryptGiftWrap(giftWrap.id);
+      expect(result).toBeNull();
+
+      const received = await inviteManager.getReceived();
+      expect(received.find((r) => r.id === giftWrap.id)).toBeUndefined();
+    });
+
+    it("should NOT strip the wrap from received when shouldRemoveOnFailure returns false, and it remains retrievable afterward", async () => {
+      const pubkey = await account.signer.getPublicKey();
+      const giftWrap = createMockGiftWrap("retryable-id", pubkey);
+
+      // AC-FORK-2: a supplied predicate returning false must prevent the strip.
+      const retainingManager = new InviteManager({
+        signer: account.signer,
+        store,
+        shouldRemoveOnFailure: () => false,
+      });
+
+      await retainingManager.ingestEvent(giftWrap);
+
+      const result = await retainingManager.decryptGiftWrap(giftWrap.id);
+      expect(result).toBeNull();
+
+      // Still present via getReceived() ...
+      const received = await retainingManager.getReceived();
+      expect(received.find((r) => r.id === giftWrap.id)).toEqual(giftWrap);
+
+      // ... and a subsequent decryptGiftWrap(id) call can still find and
+      // re-attempt it (it wasn't lost after the first failed attempt).
+      const retryResult = await retainingManager.decryptGiftWrap(giftWrap.id);
+      expect(retryResult).toBeNull();
+      const receivedAfterRetry = await retainingManager.getReceived();
+      expect(receivedAfterRetry.find((r) => r.id === giftWrap.id)).toEqual(
+        giftWrap,
+      );
+    });
+
+    it("should pass the caught error and the giftwrap to shouldRemoveOnFailure", async () => {
+      const pubkey = await account.signer.getPublicKey();
+      const giftWrap = createMockGiftWrap("predicate-args-id", pubkey);
+
+      let capturedError: unknown;
+      let capturedGiftwrap: unknown;
+      const spyManager = new InviteManager({
+        signer: account.signer,
+        store,
+        shouldRemoveOnFailure: (error, giftwrap) => {
+          capturedError = error;
+          capturedGiftwrap = giftwrap;
+          return true;
+        },
+      });
+
+      await spyManager.ingestEvent(giftWrap);
+      await spyManager.decryptGiftWrap(giftWrap.id);
+
+      expect(capturedError).toBeInstanceOf(Error);
+      expect(capturedGiftwrap).toEqual(giftWrap);
+    });
+
+    it("should fall back to stripping (fail safe) when shouldRemoveOnFailure itself throws", async () => {
+      const pubkey = await account.signer.getPublicKey();
+      const giftWrap = createMockGiftWrap("predicate-throws-id", pubkey);
+
+      const throwingManager = new InviteManager({
+        signer: account.signer,
+        store,
+        shouldRemoveOnFailure: () => {
+          throw new Error("predicate boom");
+        },
+      });
+
+      await throwingManager.ingestEvent(giftWrap);
+
+      const result = await throwingManager.decryptGiftWrap(giftWrap.id);
+      expect(result).toBeNull();
+
+      const received = await throwingManager.getReceived();
+      expect(received.find((r) => r.id === giftWrap.id)).toBeUndefined();
     });
   });
 
