@@ -13,6 +13,7 @@ import {
   defaultProposalTypes,
   encode,
   getCiphersuiteImpl,
+  getCredentialFromLeafIndex,
   joinGroup,
   unsafeTestingAuthenticationService,
 } from "ts-mls";
@@ -21,11 +22,34 @@ import { describe, expect, it } from "vitest";
 import { MarmotGroup } from "../../client/group/marmot-group.js";
 import type { NostrNetworkInterface } from "../../client/nostr-interface.js";
 import { SerializedClientState } from "../../core/client-state.js";
-import { createCredential } from "../../core/credential.js";
+import {
+  createCredential,
+  getCredentialPubkey,
+} from "../../core/credential.js";
 import {
   createGroupEvent,
+  serializeApplicationRumor,
   sortGroupCommits,
 } from "../../core/group-message.js";
+
+/**
+ * Build an authentic application-message payload whose `pubkey` matches the
+ * sending state's own MLS leaf credential, so it survives the receiver's
+ * sender-authentication enforcement (raw non-rumor bytes are dropped).
+ */
+function authenticAppData(state: ClientState, content: string): Uint8Array {
+  const pubkey = getCredentialPubkey(
+    getCredentialFromLeafIndex(state.ratchetTree, state.privatePath.leafIndex),
+  );
+  return serializeApplicationRumor({
+    id: "e".repeat(64),
+    pubkey,
+    kind: 9,
+    content,
+    tags: [],
+    created_at: 0,
+  } as Rumor);
+}
 import { createSimpleGroup } from "../../core/group.js";
 import { generateKeyPackage } from "../../core/key-package.js";
 import { InMemoryKeyValueStore } from "../../extra/in-memory-key-value-store";
@@ -779,7 +803,10 @@ describe("MIP-03 rollback convergence (AC-ROLL-1, AC-ROLL-5)", () => {
       impl,
       new InMemoryEpochSnapshotStore(),
     );
-    const plaintext = new TextEncoder().encode("hello from the winner");
+    const plaintext = authenticAppData(
+      adminWinnerGroup.state,
+      "hello from the winner",
+    );
     const { message: appMessage } = await createApplicationMessage({
       context: {
         cipherSuite: impl,

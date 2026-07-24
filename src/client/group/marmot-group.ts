@@ -47,6 +47,7 @@ import { getCredentialPubkey } from "../../core/credential.js";
 import {
   createGroupEvent,
   decryptGroupMessages,
+  deserializeApplicationData,
   GroupMessagePair,
   isBetterCandidate,
   isReplayOfApplied,
@@ -102,20 +103,84 @@ function toLeafIndex(index: number): LeafIndex {
   return index as LeafIndex;
 }
 
-/** An event whose MLS message was successfully processed */
-export type ProcessedIngestResult = {
+/**
+ * An application message whose MLS-authenticated sender has been resolved and
+ * verified against the rumor's claimed `pubkey`. This is the payload delivered on
+ * the `authenticatedApplicationMessage` event and the shape consumers bind their
+ * own author fields to.
+ */
+export interface AuthenticatedApplicationMessage {
+  /** The decrypted rumor bytes, unchanged. */
+  message: Uint8Array;
+  /** The authenticated sender's Nostr hex pubkey, from the MLS leaf credential. */
+  senderPubkey: string;
+  /** The authenticated sender's leaf index in the ratchet tree. */
+  senderLeafIndex: number;
+}
+
+/** Why an application message failed the Marmot receiver check. */
+export type UnauthenticatedMessageReason =
+  | "unauthenticated-sender"
+  | "undeserializable";
+
+/**
+ * Diagnostic payload for the `unauthenticatedMessage` event, emitted when an
+ * application message is dropped because its claimed sender could not be
+ * authenticated.
+ */
+export interface UnauthenticatedMessageInfo {
+  /** The MLS-authenticated sender's Nostr hex pubkey (empty if unresolvable). */
+  senderPubkey: string;
+  /** The sender the rumor claimed; absent when the payload could not be deserialized. */
+  claimedPubkey?: string;
+  /** Why the message was dropped. */
+  reason: UnauthenticatedMessageReason;
+  /** The Nostr event that was dropped. */
+  event: NostrEvent;
+}
+
+/** A proposal or commit whose MLS message was successfully processed */
+export type ProcessedStateChangeIngestResult = {
   kind: "processed";
-  /** The result of processing the event */
-  result: ProcessMessageResult;
+  /** The result of processing the event (a group-state change). */
+  result: Extract<ProcessMessageResult, { kind: "newState" }>;
   /** The event that was processed */
   event: NostrEvent;
   /** The MLS message that was processed */
   message: MlsMessage;
 };
 
+/**
+ * An application message that passed sender authentication and was delivered.
+ * `senderPubkey` is the decoded MLS-authenticated sender; `result.senderLeafIndex`
+ * carries the authenticated leaf index (AC-SURFACE-1).
+ */
+export type ProcessedApplicationMessageIngestResult = {
+  kind: "processed";
+  /** The ts-mls application-message result, carrying senderLeafIndex/senderCredential. */
+  result: Extract<ProcessMessageResult, { kind: "applicationMessage" }>;
+  /** The event that was processed */
+  event: NostrEvent;
+  /** The MLS message that was processed */
+  message: MlsMessage;
+  /** The MLS-authenticated sender, decoded to a Nostr hex pubkey. */
+  senderPubkey: string;
+};
+
+/**
+ * An event whose MLS message was successfully processed. Discriminate the
+ * application-message case (which carries `senderPubkey`) from the state-change
+ * case via `result.kind`.
+ */
+export type ProcessedIngestResult =
+  | ProcessedStateChangeIngestResult
+  | ProcessedApplicationMessageIngestResult;
+
 /** A commit that was rejected by the admin-verification callback */
-export type RejectedIngestResult = {
+export type CommitRejectedIngestResult = {
   kind: "rejected";
+  /** Discriminates this rejection from an application-message authentication drop. */
+  reason: "admin-policy";
   /** The result returned by processMessage (actionTaken === "reject") */
   result: ProcessMessageResult;
   /** The event that was rejected */
@@ -123,6 +188,28 @@ export type RejectedIngestResult = {
   /** The MLS message that was rejected */
   message: MlsMessage;
 };
+
+/**
+ * An application message dropped because its claimed sender failed MLS
+ * authentication, or its bytes could not be deserialized. The decrypted payload
+ * is deliberately NOT surfaced — only the sender attribution is (AC-OBSERVABLE-1).
+ */
+export type UnauthenticatedIngestResult = {
+  kind: "rejected";
+  /** Why the message was dropped. */
+  reason: UnauthenticatedMessageReason;
+  /** The event that was rejected */
+  event: NostrEvent;
+  /** The MLS-authenticated sender's Nostr hex pubkey (empty if unresolvable). */
+  senderPubkey: string;
+  /** The sender the rumor claimed; absent when the payload could not be deserialized. */
+  claimedPubkey?: string;
+};
+
+/** An event that was rejected (not delivered) */
+export type RejectedIngestResult =
+  | CommitRejectedIngestResult
+  | UnauthenticatedIngestResult;
 
 /** An event that was skipped without processing */
 export type SkippedIngestResult = {
@@ -360,8 +447,24 @@ export type MarmotGroupEvents<
 > = {
   /** Emitted when the group state is updated */
   stateChanged: (state: ClientState) => void;
-  /** Emitted when a new application message is received */
+  /**
+   * Emitted when a new application message is received. After sender-authentication
+   * enforcement this fires only for messages that passed the Marmot receiver check;
+   * it may be deprecated in a later major in favor of `authenticatedApplicationMessage`.
+   */
   applicationMessage: (message: Uint8Array) => void;
+  /**
+   * Emitted when an authenticated application message is received, carrying the
+   * MLS-resolved sender so event-style consumers can bind their own author fields.
+   */
+  authenticatedApplicationMessage: (
+    message: AuthenticatedApplicationMessage,
+  ) => void;
+  /**
+   * Emitted when an application message is dropped because its claimed sender
+   * failed MLS authentication (or its bytes could not be deserialized).
+   */
+  unauthenticatedMessage: (info: UnauthenticatedMessageInfo) => void;
   /** Emitted when the group state is saved */
   stateSaved: (group: MarmotGroup<THistory, TMedia>) => void;
   /** Emitted when the group is destroyed */
@@ -1357,6 +1460,53 @@ export class MarmotGroup<
   }
 
   /**
+   * Enforce the Marmot receiver check on a decrypted application message: the
+   * rumor's claimed `pubkey` MUST match the MLS-authenticated sender resolved from
+   * the leaf credential. Comparison is case-insensitive hex, because
+   * `deserializeApplicationData` does not normalize and an honest client may emit
+   * uppercase hex (AC-CASE-1). Never throws — the caller drops the message on any
+   * non-`ok` verdict while still adopting MLS state for forward secrecy.
+   */
+  #authenticateApplicationMessage(
+    result: Extract<ProcessMessageResult, { kind: "applicationMessage" }>,
+  ):
+    | { ok: true; senderPubkey: string }
+    | {
+        ok: false;
+        reason: UnauthenticatedMessageReason;
+        senderPubkey: string;
+        claimedPubkey?: string;
+      } {
+    let senderPubkey: string;
+    try {
+      // Decode the epoch-correct leaf credential resolved by ts-mls (do NOT
+      // re-resolve the leaf index against the current tree — that reintroduces
+      // the past-epoch misattribution hazard the fork prevents).
+      senderPubkey = getCredentialPubkey(result.senderCredential);
+    } catch {
+      // The sender's leaf credential is not a valid Nostr identity: unauthenticatable.
+      return { ok: false, reason: "unauthenticated-sender", senderPubkey: "" };
+    }
+
+    let claimedPubkey: string;
+    try {
+      claimedPubkey = deserializeApplicationData(result.message).pubkey;
+    } catch {
+      return { ok: false, reason: "undeserializable", senderPubkey };
+    }
+
+    if (claimedPubkey.toLowerCase() !== senderPubkey.toLowerCase()) {
+      return {
+        ok: false,
+        reason: "unauthenticated-sender",
+        senderPubkey,
+        claimedPubkey,
+      };
+    }
+    return { ok: true, senderPubkey };
+  }
+
+  /**
    * ingests an array of group messages and applies commits to the group state.
    *
    * Processing happens in two stages:
@@ -1585,35 +1735,72 @@ export class MarmotGroup<
               matchedEpoch,
             );
 
-            // Track under the matched past epoch for rollback invalidation bookkeeping.
-            const epochMsgs = this.#messagesByEpoch.get(matchedEpoch) ?? [];
-            epochMsgs.push(event.id);
-            this.#messagesByEpoch.set(matchedEpoch, epochMsgs);
-
-            // Update state for forward secrecy (ts-mls advances the secret tree).
+            // Adopt MLS state regardless of the authentication verdict: the
+            // message was MLS-decrypted, consuming ratchet key material (forward
+            // secrecy). "Drop" suppresses only history-save, yield, and emit —
+            // never state adoption or the post-batch save() below (AC-STATE-1).
             this.state = result.newState;
             pastEpochProcessedAny = true;
 
-            // Persist to history if configured.
-            if (this.history) {
-              try {
-                await this.history.saveMessage(result.message);
-              } catch (err) {
-                this.emit("historyError", err as Error);
-              }
-            }
-
-            // Remove the earlier error entry — this event succeeded.
+            // The event decrypted, so drop the earlier "Failed to decrypt" error.
             const errIdx = errorList.findIndex((e) => e.eventId === event.id);
             if (errIdx !== -1) errorList.splice(errIdx, 1);
 
-            yield {
-              kind: "processed",
-              result,
-              event,
-              message: decryptedMessage,
-            };
-            this.emit("applicationMessage", result.message);
+            const verdict = this.#authenticateApplicationMessage(result);
+            if (verdict.ok) {
+              // Track only delivered messages under the matched past epoch, so a
+              // later rollback never asks consumers to invalidate a message they
+              // never received (AC-OBSERVABLE-1).
+              const epochMsgs = this.#messagesByEpoch.get(matchedEpoch) ?? [];
+              epochMsgs.push(event.id);
+              this.#messagesByEpoch.set(matchedEpoch, epochMsgs);
+
+              // Persist to history if configured.
+              if (this.history) {
+                try {
+                  await this.history.saveMessage(result.message);
+                } catch (err) {
+                  this.emit("historyError", err as Error);
+                }
+              }
+
+              yield {
+                kind: "processed",
+                result,
+                event,
+                message: decryptedMessage,
+                senderPubkey: verdict.senderPubkey,
+              };
+              this.emit("applicationMessage", result.message);
+              this.emit("authenticatedApplicationMessage", {
+                message: result.message,
+                senderPubkey: verdict.senderPubkey,
+                senderLeafIndex: result.senderLeafIndex,
+              });
+            } else {
+              log(
+                "dropped unauthenticated past-epoch message event:%s reason:%s",
+                event.id.slice(0, 8),
+                verdict.reason,
+              );
+              yield {
+                kind: "rejected",
+                reason: verdict.reason,
+                event,
+                senderPubkey: verdict.senderPubkey,
+                ...(verdict.claimedPubkey !== undefined
+                  ? { claimedPubkey: verdict.claimedPubkey }
+                  : {}),
+              };
+              this.emit("unauthenticatedMessage", {
+                reason: verdict.reason,
+                event,
+                senderPubkey: verdict.senderPubkey,
+                ...(verdict.claimedPubkey !== undefined
+                  ? { claimedPubkey: verdict.claimedPubkey }
+                  : {}),
+              });
+            }
           } else {
             // Unexpected result kind for a past-epoch application message.
             // Leave in stillFailed for unreadable reporting.
@@ -1822,26 +2009,67 @@ export class MarmotGroup<
           yield { kind: "processed", result, event, message };
         } else if (result.kind === "applicationMessage") {
           log("application message event:%s", event.id.slice(0, 8));
-          // Track this message under the current epoch for rollback invalidation.
           const decryptEpoch = this.state.groupContext.epoch;
-          const epochMsgs = this.#messagesByEpoch.get(decryptEpoch) ?? [];
-          epochMsgs.push(event.id);
-          this.#messagesByEpoch.set(decryptEpoch, epochMsgs);
 
-          // Application messages also update state (for forward secrecy)
+          // Adopt MLS state regardless of the authentication verdict (forward
+          // secrecy — the ratchet key is already consumed). "Drop" suppresses
+          // only history-save, yield, and emit (AC-STATE-1).
           this.state = result.newState;
 
-          // Save application message to history (best-effort)
-          if (this.history) {
-            try {
-              await this.history.saveMessage(result.message);
-            } catch (err) {
-              this.emit("historyError", err as Error);
-            }
-          }
+          const verdict = this.#authenticateApplicationMessage(result);
+          if (verdict.ok) {
+            // Track only delivered messages under the current epoch for rollback
+            // invalidation; a dropped message is never tracked (AC-OBSERVABLE-1).
+            const epochMsgs = this.#messagesByEpoch.get(decryptEpoch) ?? [];
+            epochMsgs.push(event.id);
+            this.#messagesByEpoch.set(decryptEpoch, epochMsgs);
 
-          yield { kind: "processed", result, event, message };
-          this.emit("applicationMessage", result.message);
+            // Save application message to history (best-effort)
+            if (this.history) {
+              try {
+                await this.history.saveMessage(result.message);
+              } catch (err) {
+                this.emit("historyError", err as Error);
+              }
+            }
+
+            yield {
+              kind: "processed",
+              result,
+              event,
+              message,
+              senderPubkey: verdict.senderPubkey,
+            };
+            this.emit("applicationMessage", result.message);
+            this.emit("authenticatedApplicationMessage", {
+              message: result.message,
+              senderPubkey: verdict.senderPubkey,
+              senderLeafIndex: result.senderLeafIndex,
+            });
+          } else {
+            log(
+              "dropped unauthenticated message event:%s reason:%s",
+              event.id.slice(0, 8),
+              verdict.reason,
+            );
+            yield {
+              kind: "rejected",
+              reason: verdict.reason,
+              event,
+              senderPubkey: verdict.senderPubkey,
+              ...(verdict.claimedPubkey !== undefined
+                ? { claimedPubkey: verdict.claimedPubkey }
+                : {}),
+            };
+            this.emit("unauthenticatedMessage", {
+              reason: verdict.reason,
+              event,
+              senderPubkey: verdict.senderPubkey,
+              ...(verdict.claimedPubkey !== undefined
+                ? { claimedPubkey: verdict.claimedPubkey }
+                : {}),
+            });
+          }
         }
       } catch (error) {
         // Message processing failed - might be invalid or from wrong epoch
@@ -1974,7 +2202,13 @@ export class MarmotGroup<
               "rollback candidate event:%s rejected by admin policy – keeping current state",
               event.id.slice(0, 8),
             );
-            yield { kind: "rejected", result: probe, event, message };
+            yield {
+              kind: "rejected",
+              reason: "admin-policy",
+              result: probe,
+              event,
+              message,
+            };
             continue;
           }
           winnerResult = probe;
@@ -2151,7 +2385,13 @@ export class MarmotGroup<
               "commit event:%s rejected by admin policy",
               event.id.slice(0, 8),
             );
-            yield { kind: "rejected", result, event, message };
+            yield {
+              kind: "rejected",
+              reason: "admin-policy",
+              result,
+              event,
+              message,
+            };
             continue;
           }
 

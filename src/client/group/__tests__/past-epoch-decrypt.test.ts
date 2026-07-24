@@ -20,6 +20,7 @@ import {
   encode,
   clientStateEncoder,
   getCiphersuiteImpl,
+  getCredentialFromLeafIndex,
   joinGroup,
   type ClientState,
   unsafeTestingAuthenticationService,
@@ -27,12 +28,19 @@ import {
 import { describe, expect, it } from "vitest";
 import type { EventSigner } from "applesauce-core/event-factory";
 import type { NostrEvent } from "applesauce-core/helpers/event";
+import type { Rumor } from "applesauce-common/helpers/gift-wrap";
 
 import { MarmotGroup } from "../marmot-group.js";
 import type { NostrNetworkInterface } from "../../nostr-interface.js";
 import type { SerializedClientState } from "../../../core/client-state.js";
-import { createCredential } from "../../../core/credential.js";
-import { createGroupEvent } from "../../../core/group-message.js";
+import {
+  createCredential,
+  getCredentialPubkey,
+} from "../../../core/credential.js";
+import {
+  createGroupEvent,
+  serializeApplicationRumor,
+} from "../../../core/group-message.js";
 import { createSimpleGroup } from "../../../core/group.js";
 import { generateKeyPackage } from "../../../core/key-package.js";
 import { InMemoryKeyValueStore } from "../../../extra/in-memory-key-value-store.js";
@@ -43,6 +51,27 @@ const CIPHERSUITE = "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519";
 
 async function makeCiphersuite(): Promise<CiphersuiteImpl> {
   return getCiphersuiteImpl(CIPHERSUITE, defaultCryptoProvider);
+}
+
+/**
+ * Build an authentic application-message payload: a serialized rumor whose
+ * `pubkey` matches the sending state's own MLS leaf credential, so it passes the
+ * receiver's sender-authentication enforcement. Application messages carrying raw
+ * (non-rumor) bytes are now dropped as `undeserializable`, so decrypt/rollback
+ * fixtures must send real rumors.
+ */
+function authenticAppData(state: ClientState, content: string): Uint8Array {
+  const pubkey = getCredentialPubkey(
+    getCredentialFromLeafIndex(state.ratchetTree, state.privatePath.leafIndex),
+  );
+  return serializeApplicationRumor({
+    id: "e".repeat(64),
+    pubkey,
+    kind: 9,
+    content,
+    tags: [],
+    created_at: 0,
+  } as Rumor);
 }
 
 function makeNetwork(): NostrNetworkInterface {
@@ -219,7 +248,7 @@ describe("AC-PAST-1: past-epoch application message decrypts without rollback", 
 
     // Step 2: Admin creates an application message at epoch 1 (before the advance).
     // This message is encrypted with the epoch-1 exporter_secret.
-    const appData = new TextEncoder().encode("hello from epoch 1");
+    const appData = authenticAppData(adminState1, "hello from epoch 1");
     const { message: appMessage } = await createApplicationMessage({
       context: {
         cipherSuite: impl,
@@ -274,7 +303,7 @@ describe("AC-PAST-1: past-epoch application message decrypts without rollback", 
     expect(memberGroup.state.groupContext.epoch).toBe(4n);
 
     // Application message created at epoch 1 (3 epochs behind current = 4).
-    const appData = new TextEncoder().encode("hello from epoch 1");
+    const appData = authenticAppData(adminState1, "hello from epoch 1");
     const { message: appMessage } = await createApplicationMessage({
       context: {
         cipherSuite: impl,
@@ -359,7 +388,7 @@ describe("AC-PAST-1: past-epoch application message decrypts without rollback", 
         externalPsks: {},
       },
       state: adminState1,
-      message: new TextEncoder().encode("default depth test"),
+      message: authenticAppData(adminState1, "default depth test"),
     });
     const appEv = await createGroupEvent({
       message: appMessage,
@@ -469,7 +498,7 @@ describe("VQ-S4-003 / VQ-S4-008: past-epoch key ring stays bounded", () => {
         externalPsks: {},
       },
       state: adminStates[3], // epoch 4 (adminStates[0]=epoch1, adminStates[3]=epoch4)
-      message: new TextEncoder().encode("from epoch 4"),
+      message: authenticAppData(adminStates[3], "from epoch 4"),
     });
     const appEvent4 = await createGroupEvent({
       message: appMsg4,

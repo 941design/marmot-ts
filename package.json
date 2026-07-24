@@ -100,7 +100,7 @@
     "eventemitter3": "^5.0.4"
   },
   "peerDependencies": {
-    "ts-mls": "2.0.0-rc.10"
+    "ts-mls": ">=2.0.0-rc.10"
   },
   "lint-staged": {
     "*": "prettier --write --ignore-unknown"
@@ -117,7 +117,7 @@
     "lint-staged": "^17.0.5",
     "prettier": "^3.8.3",
     "rimraf": "~6.0.1",
-    "ts-mls": "2.0.0-rc.10",
+    "ts-mls": "github:941design/ts-mls#9f0c7bd251429f6e56bc7a41c86d7d3e74b27b13",
     "typedoc": "^0.28.19",
     "typescript": "~6.0.3",
     "vitepress": "2.0.0-alpha.17",

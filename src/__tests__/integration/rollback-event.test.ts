@@ -23,6 +23,7 @@
 import { EventSigner } from "applesauce-core";
 import {
   CiphersuiteImpl,
+  type ClientState,
   createApplicationMessage,
   createCommit,
   createProposal,
@@ -30,12 +31,14 @@ import {
   encode,
   clientStateEncoder,
   getCiphersuiteImpl,
+  getCredentialFromLeafIndex,
   joinGroup,
   unsafeTestingAuthenticationService,
   defaultProposalTypes,
 } from "ts-mls";
 import { describe, expect, it, vi } from "vitest";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import type { Rumor } from "applesauce-common/helpers/gift-wrap";
 
 import {
   MarmotGroup,
@@ -46,8 +49,33 @@ import {
   deserializeClientState,
   type SerializedClientState,
 } from "../../core/client-state.js";
-import { createCredential } from "../../core/credential.js";
-import { createGroupEvent } from "../../core/group-message.js";
+import {
+  createCredential,
+  getCredentialPubkey,
+} from "../../core/credential.js";
+import {
+  createGroupEvent,
+  serializeApplicationRumor,
+} from "../../core/group-message.js";
+
+/**
+ * Build an authentic application-message payload whose `pubkey` matches the
+ * sending state's own MLS leaf credential, so it survives the receiver's
+ * sender-authentication enforcement (raw non-rumor bytes are dropped).
+ */
+function authenticAppData(state: ClientState, content: string): Uint8Array {
+  const pubkey = getCredentialPubkey(
+    getCredentialFromLeafIndex(state.ratchetTree, state.privatePath.leafIndex),
+  );
+  return serializeApplicationRumor({
+    id: "e".repeat(64),
+    pubkey,
+    kind: 9,
+    content,
+    tags: [],
+    created_at: 0,
+  } as Rumor);
+}
 import { createSimpleGroup } from "../../core/group.js";
 import { generateKeyPackage } from "../../core/key-package.js";
 import { InMemoryKeyValueStore } from "../../extra/in-memory-key-value-store.js";
@@ -338,7 +366,7 @@ describe("AC-EVT-1 + AC-MSG-1: rollback event emitted with correct payload", () 
         externalPsks: {},
       },
       state: loserEpoch2State, // loser epoch-2 keys
-      message: new TextEncoder().encode("message under loser epoch"),
+      message: authenticAppData(loserEpoch2State, "message under loser epoch"),
     });
     const loserAppEvent = await createGroupEvent({
       message: loserAppMsg,
@@ -419,7 +447,10 @@ describe("AC-MSG-2: winner-epoch app messages retried and decrypted", () => {
     winEvent.id = "a".repeat(64);
 
     // App message encrypted under winner's epoch-2 keys — unreadable at epoch 1.
-    const plaintext = new TextEncoder().encode("hello from winner epoch");
+    const plaintext = authenticAppData(
+      winnerEpoch2State,
+      "hello from winner epoch",
+    );
     const { message: appMsg } = await createApplicationMessage({
       context: {
         cipherSuite: impl,

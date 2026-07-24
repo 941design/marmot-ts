@@ -282,8 +282,18 @@ export function deserializeApplicationData(data: Uint8Array): Rumor {
     throw new Error("Invalid application data: not an object");
   }
 
-  // Check required fields for a rumor
-  if (!parsed.id || !parsed.pubkey || parsed.kind === undefined) {
+  // Check required fields for a rumor. `id` and `pubkey` must be strings, not
+  // merely truthy: a member can craft a rumor whose pubkey is a non-string
+  // truthy value (number, array, object). Rejecting those here routes the
+  // payload through the caller's undeserializable path rather than letting a
+  // later `.toLowerCase()` on the claimed pubkey throw at the sender-auth check.
+  if (
+    !parsed.id ||
+    typeof parsed.id !== "string" ||
+    !parsed.pubkey ||
+    typeof parsed.pubkey !== "string" ||
+    parsed.kind === undefined
+  ) {
     throw new Error("Invalid application data: missing required fields");
   }
 

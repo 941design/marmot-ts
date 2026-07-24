@@ -6,3 +6,8 @@ ignoredBuiltDependencies:
 
 onlyBuiltDependencies:
   - esbuild
+  # ts-mls is consumed as a git dependency (github:941design/ts-mls) whose dist/
+  # is built by its prepare script at install time; pnpm blocks git-dep build
+  # scripts unless the package is allowlisted here. Consumers installing marmot-ts
+  # with pnpm must add the same entry.
+  - ts-mls
